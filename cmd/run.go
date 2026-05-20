@@ -3,9 +3,9 @@ package cmd
 import (
 	"fmt"
 
-	"lnrdll/prober/internal/config"
-	"lnrdll/prober/internal/output"
-	"lnrdll/prober/internal/prober"
+	"github.com/lnrdll/prober/internal/config"
+	"github.com/lnrdll/prober/internal/output"
+	"github.com/lnrdll/prober/internal/prober"
 
 	"github.com/spf13/cobra"
 )

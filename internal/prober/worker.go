@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"lnrdll/prober/internal/config"
-	"lnrdll/prober/internal/output"
+	"github.com/lnrdll/prober/internal/config"
+	"github.com/lnrdll/prober/internal/output"
 )
 
 const defaultTargetTimeoutSeconds = 60

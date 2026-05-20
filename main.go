@@ -2,8 +2,9 @@ package main
 
 import (
 	"fmt"
-	"lnrdll/prober/cmd"
 	"os"
+
+	"github.com/lnrdll/prober/cmd"
 )
 
 func main() {

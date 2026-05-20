@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"lnrdll/prober/internal/config"
+	"github.com/lnrdll/prober/internal/config"
 
 	"github.com/goccy/go-yaml"
 	"github.com/spf13/cobra"

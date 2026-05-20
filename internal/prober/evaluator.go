@@ -2,9 +2,9 @@ package prober
 
 import (
 	"fmt"
-	"lnrdll/prober/internal/config"
 
 	"github.com/google/cel-go/cel"
+	"github.com/lnrdll/prober/internal/config"
 )
 
 type EvalContext struct {

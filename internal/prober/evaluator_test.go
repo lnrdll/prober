@@ -1,10 +1,10 @@
 package prober
 
 import (
-	"lnrdll/prober/internal/config"
 	"testing"
 
 	"github.com/google/cel-go/cel"
+	"github.com/lnrdll/prober/internal/config"
 	"github.com/stretchr/testify/assert"
 )
 

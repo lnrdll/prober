@@ -9,7 +9,7 @@ golang = "1.25"
 golangci-lint = "latest"
 
 [vars]
-name = "lnrdll/prober"
+name = "github.com/lnrdll/prober"
 
 [tasks.init]
 description = "(i) Init"

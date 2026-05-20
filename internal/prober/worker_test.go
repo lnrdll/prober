@@ -4,8 +4,6 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
-	"lnrdll/prober/internal/config"
-	"lnrdll/prober/internal/output"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -13,6 +11,8 @@ import (
 	"time"
 
 	"github.com/google/cel-go/cel"
+	"github.com/lnrdll/prober/internal/config"
+	"github.com/lnrdll/prober/internal/output"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

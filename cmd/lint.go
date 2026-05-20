@@ -2,8 +2,9 @@ package cmd
 
 import (
 	"fmt"
+
+	"github.com/lnrdll/prober/internal/prober"
 	"github.com/spf13/cobra"
-	"lnrdll/prober/internal/prober"
 )
 
 var lintConfigPath string

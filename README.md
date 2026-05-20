@@ -17,6 +17,19 @@ It reads a YAML manifest, runs probes in parallel, evaluates CEL assertions, pub
 
 ## Installation
 
+### Go install
+
+```bash
+go install github.com/lnrdll/prober@latest
+```
+
+### Mise
+
+```bash
+[tools]
+"github:lnrdll/prober" = "latest"  
+```
+
 ### Build locally
 
 ```bash
