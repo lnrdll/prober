@@ -1,8 +1,22 @@
 # prober
 
-`prober` is a lightweight HTTP(S) uptime probe CLI for CI and monitoring.
+<a name="readme-top"></a>
 
-It reads a YAML manifest, runs probes in parallel, evaluates CEL assertions, publishes results, and can fail the process when any target is down.
+<div align="center">
+<img height="535" alt="ymr-logo" src="./assets/prober.png" />
+
+<br />
+
+<p align="center">
+<strong>prober</strong> is a lightweight HTTP(S) uptime probe CLI for CI and monitoring. It reads a YAML manifest, runs probes in parallel, evaluates CEL assertions, publishes results, and can fail the process when any target is down.
+
+<br />
+
+<a href="https://github.com/lnrdll/prober/issues/new?labels=bug&template=bug_report.md">Report Bug</a>
+·
+<a href="https://github.com/lnrdll/prober/issues/new?labels=enhancement&template=feature_request.md">Request Feature</a>
+</p>
+</div>
 
 ## Features
 
