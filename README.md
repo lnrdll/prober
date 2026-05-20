@@ -235,7 +235,6 @@ prober run -c targets.yaml --gcp-statsd 127.0.0.1:8125
 ## Behavior notes
 
 - Requests do not follow redirects.
-- Requests to cloud metadata hosts are blocked.
 - Response bodies are truncated to 1024 bytes before being stored in results.
 - A `Host` header override is supported.
 - Disabled targets are counted as skipped.

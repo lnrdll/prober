@@ -62,7 +62,7 @@ func CompileTargetAssertions(targets []config.Target) ([]config.Target, error) {
 
 // EvaluatePrecompiled runs the specific program against data fields in memory.
 func EvaluatePrecompiled(prog cel.Program, ctx EvalContext) (bool, error) {
-	input := map[string]interface{}{
+	input := map[string]any{
 		"status":        int64(ctx.Status),
 		"body":          ctx.Body,
 		"latency_ms":    ctx.LatencyMS,

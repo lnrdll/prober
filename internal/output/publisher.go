@@ -24,23 +24,26 @@ type Result struct {
 }
 
 type RuntimeContext struct {
-	store map[string]interface{}
+	store map[string]any
 }
 
-func NewRuntimeContext() RuntimeContext { return RuntimeContext{store: make(map[string]interface{})} }
+func NewRuntimeContext() RuntimeContext { return RuntimeContext{store: make(map[string]any)} }
+
 func (c RuntimeContext) GetBool(key string) bool {
 	if val, ok := c.store[key].(*bool); ok && val != nil {
 		return *val
 	}
 	return false
 }
+
 func (c RuntimeContext) GetString(key string) string {
 	if val, ok := c.store[key].(*string); ok && val != nil {
 		return *val
 	}
 	return ""
 }
-func (c RuntimeContext) Set(key string, ptr interface{}) { c.store[key] = ptr }
+
+func (c RuntimeContext) Set(key string, ptr any) { c.store[key] = ptr }
 
 type ExtensionHook struct {
 	SetupFlags func(ctx RuntimeContext, registerFlag func(func()))

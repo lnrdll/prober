@@ -7,7 +7,6 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -30,7 +29,7 @@ type Summary struct {
 func Execute(targets []config.Target, publishers []output.Publisher) Summary {
 	start := time.Now()
 	summary := Summary{Total: len(targets)}
-	// 1. Maintain precisely two global reusable transports for connection pooling
+	// 1. Maintain two global reusable transports for connection pooling
 	secureClient := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse // Avoid open redirect token leaks
@@ -59,7 +58,7 @@ func Execute(targets []config.Target, publishers []output.Publisher) Summary {
 	for _, target := range targets {
 		if target.Disabled {
 			summary.Skipped++
-			continue // Skip muted entries seamlessly
+			continue // Skip muted entries
 		}
 
 		wg.Add(1)
@@ -132,16 +131,6 @@ func probeTargetOnce(t config.Target, client *http.Client) output.Result {
 		res.Method = http.MethodGet
 	}
 
-	// Security Guardrail: Block Server-Side Request Forgery (SSRF) against Cloud Metadata Endpoints
-	parsedURL, err := url.Parse(t.URL)
-	if err == nil {
-		hostStr := strings.ToLower(parsedURL.Hostname())
-		if hostStr == "169.254.169.254" || hostStr == "metadata.google.internal" {
-			res.Error = "SSRF Alert: Request to Cloud Metadata Server explicitly blocked"
-			return res
-		}
-	}
-
 	req, err := http.NewRequest(res.Method, t.URL, bytes.NewBufferString(t.Body))
 	if err != nil {
 		res.Error = err.Error()
@@ -187,7 +176,7 @@ func probeTargetOnce(t config.Target, client *http.Client) output.Result {
 
 	res.Status = resp.StatusCode
 
-	// Read and truncate body sharply to avoid logging enormous stack traces / leaking massive PII payload blobs
+	// Read and truncate body to avoid logging enormous stack traces
 	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 	respStr := string(bodyBytes)
 
@@ -225,7 +214,7 @@ func probeTargetOnce(t config.Target, client *http.Client) output.Result {
 	}
 
 	res.Up = true
-	// High Performance: Use precompiled execution references (Zero compilation at check runtime)
+	// High Performance: Use precompiled execution references
 	for idx, prog := range t.CompiledCel {
 		passed, err := EvaluatePrecompiled(prog, evalCtx)
 		if err != nil || !passed {
