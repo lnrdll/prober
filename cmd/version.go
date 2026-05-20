@@ -3,25 +3,21 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/spf13/cobra"
-)
+	"github.com/lnrdll/prober/internal/buildinfo"
 
-var (
-	Version = "dev"
-	Commit  = "none"
-	Date    = "unknown"
+	"github.com/spf13/cobra"
 )
 
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print the prober version",
 	Run: func(cmd *cobra.Command, args []string) {
-		if Commit != "none" && Date != "unknown" {
-			cmd.Println(fmt.Sprintf("prober %s (%s %s)", Version, Commit, Date))
+		if buildinfo.Commit != "none" && buildinfo.Date != "unknown" {
+			cmd.Println(fmt.Sprintf("prober %s (%s %s)", buildinfo.Version, buildinfo.Commit, buildinfo.Date))
 			return
 		}
 
-		cmd.Println(fmt.Sprintf("prober %s", Version))
+		cmd.Println(fmt.Sprintf("prober %s", buildinfo.Version))
 	},
 }
 
