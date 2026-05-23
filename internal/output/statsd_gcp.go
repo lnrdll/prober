@@ -16,7 +16,7 @@ func init() {
 			addr := new(string)
 			ctx.Set(string(OutputStatsdGCP), addr)
 			registerFlag(func() {
-				BindStringFlag(string(OutputStatsdGCP), "", "UDP network address location pointing to local GCP Ops Agent", addr)
+				BindStringFlag(string(OutputStatsdGCP), DefaultStatsDAddr, "UDP network address location pointing to local GCP Ops Agent", addr)
 			})
 		},
 		Factory: func(ctx RuntimeContext) (Publisher, error) {

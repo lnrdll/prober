@@ -16,7 +16,7 @@ func init() {
 			addr := new(string)
 			ctx.Set(string(OutputStatsdDatadog), addr)
 			registerFlag(func() {
-				BindStringFlag(string(OutputStatsdDatadog), "", "UDP network address location pointing to local Datadog daemon", addr)
+				BindStringFlag(string(OutputStatsdDatadog), DefaultStatsDAddr, "UDP network address location pointing to local Datadog daemon", addr)
 			})
 		},
 		Factory: func(ctx RuntimeContext) (Publisher, error) {

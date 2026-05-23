@@ -200,6 +200,8 @@ prober run -c targets.yaml -o junit --junit prober.xml
 prober run -c targets.yaml -o statsd-datadog --statsd-datadog 127.0.0.1:8125
 prober run -c targets.yaml -o statsd-gcp --statsd-gcp 127.0.0.1:8125
 prober run -c targets.yaml -o summary -o file --file prober.log
+prober run -c targets.yaml -o file
+prober run -c targets.yaml -o junit
 ```
 
 Summary output looks like:
@@ -219,7 +221,7 @@ prober lint -c targets.yaml
 
 ## Output publishers
 
-Outputs are selected with repeated `-o, --output` flags. Outputs that need additional configuration use a same-named flag and must be configured when selected, for example `-o file --file prober.log`.
+Outputs are selected with repeated `-o, --output` flags. Outputs that need additional configuration use a same-named flag and ship with sensible defaults, which you can override when needed.
 
 If no output is selected, `stdout` JSON logging is enabled by default.
 
@@ -235,6 +237,8 @@ prober run -c targets.yaml -o summary
 prober run -c targets.yaml -o junit --junit prober.xml
 ```
 
+Default path: `prober.xml`
+
 ### Stdout
 
 ```bash
@@ -247,17 +251,23 @@ prober run -c targets.yaml -o stdout
 prober run -c targets.yaml -o file --file prober.log
 ```
 
+Default path: `prober.log`
+
 ### Datadog StatsD
 
 ```bash
 prober run -c targets.yaml -o statsd-datadog --statsd-datadog 127.0.0.1:8125
 ```
 
+Default address: `127.0.0.1:8125`
+
 ### GCP StatsD
 
 ```bash
 prober run -c targets.yaml -o statsd-gcp --statsd-gcp 127.0.0.1:8125
 ```
+
+Default address: `127.0.0.1:8125`
 
 ## Behavior notes
 

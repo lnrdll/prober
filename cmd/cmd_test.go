@@ -18,10 +18,10 @@ func TestRunCmdRunE(t *testing.T) {
 	oldFail := failOnTargetFailure
 	oldOutputs := append([]string(nil), runOutputs...)
 	oldOut := runCmd.OutOrStdout()
-	fileOutput := ""
-	junitOutput := ""
-	datadogOutput := ""
-	gcpOutput := ""
+	fileOutput := output.DefaultFilePath
+	junitOutput := output.DefaultJUnitPath
+	datadogOutput := output.DefaultStatsDAddr
+	gcpOutput := output.DefaultStatsDAddr
 	globalRunCtx.Set(string(output.OutputFile), &fileOutput)
 	globalRunCtx.Set(string(output.OutputJunit), &junitOutput)
 	globalRunCtx.Set(string(output.OutputStatsdDatadog), &datadogOutput)
@@ -31,6 +31,7 @@ func TestRunCmdRunE(t *testing.T) {
 		failOnTargetFailure = oldFail
 		runOutputs = oldOutputs
 		runCmd.SetOut(oldOut)
+		resetOutputFlagState(t)
 	}()
 
 	t.Run("prints summary and succeeds when failures are allowed", func(t *testing.T) {
@@ -39,11 +40,12 @@ func TestRunCmdRunE(t *testing.T) {
 		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: failing\n    url: https://example.com\n    assertions:\n      - status == 500\n"), 0644))
 		runConfigPath = path
 		failOnTargetFailure = false
+		resetOutputFlagState(t)
 		runOutputs = []string{string(output.OutputSummary), string(output.OutputFile)}
 		fileOutput = filePath
-		junitOutput = ""
-		datadogOutput = ""
-		gcpOutput = ""
+		junitOutput = output.DefaultJUnitPath
+		datadogOutput = output.DefaultStatsDAddr
+		gcpOutput = output.DefaultStatsDAddr
 
 		buf := &bytes.Buffer{}
 		runCmd.SetOut(buf)
@@ -59,11 +61,12 @@ func TestRunCmdRunE(t *testing.T) {
 		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: failing\n    url: https://example.com\n    assertions:\n      - status == 500\n"), 0644))
 		runConfigPath = path
 		failOnTargetFailure = false
+		resetOutputFlagState(t)
 		runOutputs = []string{string(output.OutputSummary)}
-		fileOutput = ""
-		junitOutput = ""
-		datadogOutput = ""
-		gcpOutput = ""
+		fileOutput = output.DefaultFilePath
+		junitOutput = output.DefaultJUnitPath
+		datadogOutput = output.DefaultStatsDAddr
+		gcpOutput = output.DefaultStatsDAddr
 
 		buf := &bytes.Buffer{}
 		runCmd.SetOut(buf)
@@ -91,11 +94,12 @@ func TestRunCmdRunE(t *testing.T) {
 		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: failing\n    url: https://example.com\n    assertions:\n      - status == 500\n"), 0644))
 		runConfigPath = path
 		failOnTargetFailure = true
+		resetOutputFlagState(t)
 		runOutputs = []string{string(output.OutputSummary), string(output.OutputFile)}
 		fileOutput = filePath
-		junitOutput = ""
-		datadogOutput = ""
-		gcpOutput = ""
+		junitOutput = output.DefaultJUnitPath
+		datadogOutput = output.DefaultStatsDAddr
+		gcpOutput = output.DefaultStatsDAddr
 
 		buf := &bytes.Buffer{}
 		runCmd.SetOut(buf)
@@ -110,11 +114,12 @@ func TestRunCmdRunE(t *testing.T) {
 		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: test\n    url: https://example.com\n    method: get\n"), 0644))
 		runConfigPath = path
 		failOnTargetFailure = true
+		resetOutputFlagState(t)
 		runOutputs = []string{string(output.OutputFile)}
 		fileOutput = filepath.Join(t.TempDir(), "prober.log")
-		junitOutput = ""
-		datadogOutput = ""
-		gcpOutput = ""
+		junitOutput = output.DefaultJUnitPath
+		datadogOutput = output.DefaultStatsDAddr
+		gcpOutput = output.DefaultStatsDAddr
 
 		err := runCmd.RunE(runCmd, nil)
 		assert.ErrorContains(t, err, "validate config")
@@ -127,11 +132,12 @@ func TestRunCmdRunE(t *testing.T) {
 		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: passing\n    url: https://example.com\n    assertions:\n      - status == 200\n"), 0644))
 		runConfigPath = path
 		failOnTargetFailure = true
+		resetOutputFlagState(t)
 		runOutputs = []string{string(output.OutputFile)}
 		fileOutput = filePath
-		junitOutput = ""
-		datadogOutput = ""
-		gcpOutput = ""
+		junitOutput = output.DefaultJUnitPath
+		datadogOutput = output.DefaultStatsDAddr
+		gcpOutput = output.DefaultStatsDAddr
 
 		buf := &bytes.Buffer{}
 		runCmd.SetOut(buf)
@@ -146,11 +152,12 @@ func TestRunCmdRunE(t *testing.T) {
 		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: failing\n    url: https://example.com\n    assertions:\n      - status == 500\n"), 0644))
 		runConfigPath = path
 		failOnTargetFailure = false
+		resetOutputFlagState(t)
 		runOutputs = []string{string(output.OutputSummary)}
-		fileOutput = ""
-		junitOutput = ""
-		datadogOutput = ""
-		gcpOutput = ""
+		fileOutput = output.DefaultFilePath
+		junitOutput = output.DefaultJUnitPath
+		datadogOutput = output.DefaultStatsDAddr
+		gcpOutput = output.DefaultStatsDAddr
 
 		buf := &bytes.Buffer{}
 		runCmd.SetOut(buf)
@@ -167,11 +174,12 @@ func TestRunCmdRunE(t *testing.T) {
 		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: homepage\n    url: https://example.com\n    assertions:\n      - status == 200\n  - name: api\n    url: https://example.com\n    assertions:\n      - status == 500\n"), 0644))
 		runConfigPath = path
 		failOnTargetFailure = false
+		resetOutputFlagState(t)
 		runOutputs = []string{string(output.OutputJunit)}
-		fileOutput = ""
+		fileOutput = output.DefaultFilePath
 		junitOutput = reportPath
-		datadogOutput = ""
-		gcpOutput = ""
+		datadogOutput = output.DefaultStatsDAddr
+		gcpOutput = output.DefaultStatsDAddr
 
 		buf := &bytes.Buffer{}
 		runCmd.SetOut(buf)
@@ -193,30 +201,33 @@ func TestRunCmdRunE(t *testing.T) {
 		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: passing\n    url: https://example.com\n"), 0644))
 		runConfigPath = path
 		failOnTargetFailure = false
+		resetOutputFlagState(t)
 		runOutputs = []string{"unknown"}
-		fileOutput = ""
-		junitOutput = ""
-		datadogOutput = ""
-		gcpOutput = ""
+		fileOutput = output.DefaultFilePath
+		junitOutput = output.DefaultJUnitPath
+		datadogOutput = output.DefaultStatsDAddr
+		gcpOutput = output.DefaultStatsDAddr
 
 		err := runCmd.RunE(runCmd, nil)
 		assert.ErrorContains(t, err, "invalid output")
 		assert.ErrorContains(t, err, string(output.OutputStdout))
 	})
 
-	t.Run("requires config when output is selected", func(t *testing.T) {
+	t.Run("uses default file config when output is selected", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "targets.yaml")
 		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: passing\n    url: https://example.com\n"), 0644))
 		runConfigPath = path
 		failOnTargetFailure = false
+		resetOutputFlagState(t)
 		runOutputs = []string{string(output.OutputFile)}
-		fileOutput = ""
-		junitOutput = ""
-		datadogOutput = ""
-		gcpOutput = ""
+		fileOutput = output.DefaultFilePath
+		junitOutput = output.DefaultJUnitPath
+		datadogOutput = output.DefaultStatsDAddr
+		gcpOutput = output.DefaultStatsDAddr
+		defer func() { _ = os.Remove(output.DefaultFilePath) }()
 
 		err := runCmd.RunE(runCmd, nil)
-		assert.ErrorContains(t, err, "--file is required when -o file is set")
+		require.NoError(t, err)
 	})
 
 	t.Run("requires output selection when config is provided", func(t *testing.T) {
@@ -224,30 +235,52 @@ func TestRunCmdRunE(t *testing.T) {
 		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: passing\n    url: https://example.com\n"), 0644))
 		runConfigPath = path
 		failOnTargetFailure = false
+		resetOutputFlagState(t)
 		runOutputs = nil
 		fileOutput = filepath.Join(t.TempDir(), "prober.log")
-		junitOutput = ""
-		datadogOutput = ""
-		gcpOutput = ""
+		junitOutput = output.DefaultJUnitPath
+		datadogOutput = output.DefaultStatsDAddr
+		gcpOutput = output.DefaultStatsDAddr
+		require.NoError(t, runCmd.Flags().Set(string(output.OutputFile), fileOutput))
 
 		err := runCmd.RunE(runCmd, nil)
 		assert.ErrorContains(t, err, "--file requires -o file")
 	})
 
-	t.Run("requires junit config when selected", func(t *testing.T) {
+	t.Run("uses default junit config when output is selected", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "targets.yaml")
 		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: passing\n    url: https://example.com\n"), 0644))
 		runConfigPath = path
 		failOnTargetFailure = false
+		resetOutputFlagState(t)
 		runOutputs = []string{string(output.OutputJunit)}
-		fileOutput = ""
-		junitOutput = ""
-		datadogOutput = ""
-		gcpOutput = ""
+		fileOutput = output.DefaultFilePath
+		junitOutput = filepath.Join(t.TempDir(), output.DefaultJUnitPath)
+		datadogOutput = output.DefaultStatsDAddr
+		gcpOutput = output.DefaultStatsDAddr
 
 		err := runCmd.RunE(runCmd, nil)
-		assert.ErrorContains(t, err, "--junit is required when -o junit is set")
+		require.NoError(t, err)
+		_, statErr := os.Stat(junitOutput)
+		require.NoError(t, statErr)
 	})
+
+	t.Run("flag defaults are exposed in help metadata", func(t *testing.T) {
+		resetOutputFlagState(t)
+		assert.Equal(t, output.DefaultFilePath, runCmd.Flags().Lookup(string(output.OutputFile)).DefValue)
+		assert.Equal(t, output.DefaultJUnitPath, runCmd.Flags().Lookup(string(output.OutputJunit)).DefValue)
+		assert.Equal(t, output.DefaultStatsDAddr, runCmd.Flags().Lookup(string(output.OutputStatsdDatadog)).DefValue)
+		assert.Equal(t, output.DefaultStatsDAddr, runCmd.Flags().Lookup(string(output.OutputStatsdGCP)).DefValue)
+	})
+}
+
+func resetOutputFlagState(t *testing.T) {
+	t.Helper()
+	for _, flagName := range []string{string(output.OutputFile), string(output.OutputJunit), string(output.OutputStatsdDatadog), string(output.OutputStatsdGCP)} {
+		flag := runCmd.Flags().Lookup(flagName)
+		require.NotNil(t, flag)
+		flag.Changed = false
+	}
 }
 
 func TestLoadConfig(t *testing.T) {

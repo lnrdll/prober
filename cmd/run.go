@@ -42,11 +42,12 @@ var runCmd = &cobra.Command{
 				continue
 			}
 
+			flagChanged := cmd.Flags().Changed(string(name))
 			configuredValue := globalRunCtx.GetString(string(name))
 			if globalRunCtx.OutputSelected(name) && configuredValue == "" {
 				return fmt.Errorf("--%s is required when -o %s is set", name, name)
 			}
-			if !globalRunCtx.OutputSelected(name) && configuredValue != "" {
+			if !globalRunCtx.OutputSelected(name) && flagChanged {
 				return fmt.Errorf("--%s requires -o %s", name, name)
 			}
 		}

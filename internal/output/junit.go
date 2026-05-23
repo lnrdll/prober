@@ -50,7 +50,7 @@ func init() {
 			path := new(string)
 			ctx.Set(string(OutputJunit), path)
 			registerFlag(func() {
-				BindStringFlag(string(OutputJunit), "", "Write a JUnit XML report to a file", path)
+				BindStringFlag(string(OutputJunit), DefaultJUnitPath, "Write a JUnit XML report to a file", path)
 			})
 		},
 		Factory: func(ctx RuntimeContext) (Publisher, error) {

@@ -88,6 +88,19 @@ func TestFilePublisherFactory(t *testing.T) {
 		require.NotNil(t, pub)
 		assert.NoError(t, pub.Close())
 	})
+
+	t.Run("opens file when default config is present", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), DefaultFilePath)
+		selected := []string{string(OutputFile)}
+		ctx := NewRuntimeContext()
+		ctx.Set(string(SelectionKey), &selected)
+		ctx.Set(string(OutputFile), stringPtr(path))
+
+		pub, err := hook.Factory(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, pub)
+		assert.NoError(t, pub.Close())
+	})
 }
 
 func TestFilePublisherPublishAndClose(t *testing.T) {
@@ -256,6 +269,18 @@ func TestJUnitOutputFactory(t *testing.T) {
 		require.NoError(t, err)
 		assert.IsType(t, &JUnitOutput{}, pub)
 	})
+
+	t.Run("returns publisher when default config is present", func(t *testing.T) {
+		selected := []string{string(OutputJunit)}
+		path := filepath.Join(t.TempDir(), DefaultJUnitPath)
+		ctx := NewRuntimeContext()
+		ctx.Set(string(SelectionKey), &selected)
+		ctx.Set(string(OutputJunit), stringPtr(path))
+
+		pub, err := hook.Factory(ctx)
+		require.NoError(t, err)
+		assert.IsType(t, &JUnitOutput{}, pub)
+	})
 }
 
 func TestJUnitOutputPublishSummary(t *testing.T) {
@@ -324,6 +349,18 @@ func TestStatsdPublisherFactories(t *testing.T) {
 		assert.ErrorContains(t, err, "--statsd-datadog is required")
 	})
 
+	t.Run("datadog returns publisher when default config is present", func(t *testing.T) {
+		hook := Registry[string(OutputStatsdDatadog)]
+		selected := []string{string(OutputStatsdDatadog)}
+		ctx := NewRuntimeContext()
+		ctx.Set(string(SelectionKey), &selected)
+		ctx.Set(string(OutputStatsdDatadog), stringPtr(DefaultStatsDAddr))
+
+		pub, err := hook.Factory(ctx)
+		require.NoError(t, err)
+		assert.IsType(t, &DatadogStatsDPublisher{}, pub)
+	})
+
 	t.Run("gcp returns nil when not selected", func(t *testing.T) {
 		hook := Registry[string(OutputStatsdGCP)]
 		ctx := NewRuntimeContext()
@@ -343,6 +380,18 @@ func TestStatsdPublisherFactories(t *testing.T) {
 		pub, err := hook.Factory(ctx)
 		assert.Nil(t, pub)
 		assert.ErrorContains(t, err, "--statsd-gcp is required")
+	})
+
+	t.Run("gcp returns publisher when default config is present", func(t *testing.T) {
+		hook := Registry[string(OutputStatsdGCP)]
+		selected := []string{string(OutputStatsdGCP)}
+		ctx := NewRuntimeContext()
+		ctx.Set(string(SelectionKey), &selected)
+		ctx.Set(string(OutputStatsdGCP), stringPtr(DefaultStatsDAddr))
+
+		pub, err := hook.Factory(ctx)
+		require.NoError(t, err)
+		assert.IsType(t, &GCPStatsDPublisher{}, pub)
 	})
 }
 

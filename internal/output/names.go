@@ -9,7 +9,10 @@ import (
 type Name string
 
 const (
-	StdoutWriterKey = "stdout-writer"
+	StdoutWriterKey   = "stdout-writer"
+	DefaultFilePath   = "prober.log"
+	DefaultJUnitPath  = "prober.xml"
+	DefaultStatsDAddr = "127.0.0.1:8125"
 
 	SelectionKey Name = "outputs"
 

@@ -17,7 +17,7 @@ func init() {
 			path := new(string)
 			ctx.Set(string(OutputFile), path)
 			registerFlag(func() {
-				BindStringFlag(string(OutputFile), "", "Append structured JSON log lines to a file", path)
+				BindStringFlag(string(OutputFile), DefaultFilePath, "Append structured JSON log lines to a file", path)
 			})
 		},
 		Factory: func(ctx RuntimeContext) (Publisher, error) {
