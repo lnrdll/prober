@@ -17,18 +17,9 @@ import (
 
 const defaultTargetTimeoutSeconds = 60
 
-type Summary struct {
-	Total    int
-	Passed   int
-	Failed   int
-	Skipped  int
-	Duration time.Duration
-	Results  []output.Result
-}
-
-func Execute(targets []config.Target, publishers []output.Publisher) Summary {
+func Execute(targets []config.Target, publishers []output.Publisher) output.Summary {
 	start := time.Now()
-	summary := Summary{Total: len(targets)}
+	summary := output.Summary{Total: len(targets)}
 	// 1. Maintain two global reusable transports for connection pooling
 	secureClient := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -97,6 +88,12 @@ func Execute(targets []config.Target, publishers []output.Publisher) Summary {
 	}
 
 	summary.Duration = time.Since(start)
+	for _, pub := range publishers {
+		if summaryPublisher, ok := pub.(output.SummaryPublisher); ok {
+			_ = summaryPublisher.PublishSummary(summary)
+		}
+	}
+
 	return summary
 }
 

@@ -11,18 +11,22 @@ type DatadogStatsDPublisher struct {
 }
 
 func init() {
-	Register("datadog_statsd", ExtensionHook{
+	Register(string(OutputStatsdDatadog), ExtensionHook{
 		SetupFlags: func(ctx RuntimeContext, registerFlag func(func())) {
 			addr := new(string)
-			ctx.Set("datadog_statsd_addr", addr)
+			ctx.Set(string(OutputStatsdDatadog), addr)
 			registerFlag(func() {
-				BindStringFlag("datadog-statsd", "", "UDP network address location pointing to local Datadog daemon", addr)
+				BindStringFlag(string(OutputStatsdDatadog), "", "UDP network address location pointing to local Datadog daemon", addr)
 			})
 		},
 		Factory: func(ctx RuntimeContext) (Publisher, error) {
-			addr := ctx.GetString("datadog_statsd_addr")
-			if addr == "" {
+			if !ctx.OutputSelected(OutputStatsdDatadog) {
 				return nil, nil
+			}
+
+			addr := ctx.GetString(string(OutputStatsdDatadog))
+			if addr == "" {
+				return nil, fmt.Errorf("--%s is required when -o %s is set", OutputStatsdDatadog, OutputStatsdDatadog)
 			}
 
 			c, err := statsd.New(addr, statsd.WithNamespace("custom_monitoring."))

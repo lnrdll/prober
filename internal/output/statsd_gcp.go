@@ -11,18 +11,22 @@ type GCPStatsDPublisher struct {
 }
 
 func init() {
-	Register("gcp_statsd", ExtensionHook{
+	Register(string(OutputStatsdGCP), ExtensionHook{
 		SetupFlags: func(ctx RuntimeContext, registerFlag func(func())) {
 			addr := new(string)
-			ctx.Set("gcp_statsd_addr", addr)
+			ctx.Set(string(OutputStatsdGCP), addr)
 			registerFlag(func() {
-				BindStringFlag("gcp-statsd", "", "UDP network address location pointing to local GCP Ops Agent", addr)
+				BindStringFlag(string(OutputStatsdGCP), "", "UDP network address location pointing to local GCP Ops Agent", addr)
 			})
 		},
 		Factory: func(ctx RuntimeContext) (Publisher, error) {
-			addr := ctx.GetString("gcp_statsd_addr")
-			if addr == "" {
+			if !ctx.OutputSelected(OutputStatsdGCP) {
 				return nil, nil
+			}
+
+			addr := ctx.GetString(string(OutputStatsdGCP))
+			if addr == "" {
+				return nil, fmt.Errorf("--%s is required when -o %s is set", OutputStatsdGCP, OutputStatsdGCP)
 			}
 
 			c, err := statsd.New(addr)

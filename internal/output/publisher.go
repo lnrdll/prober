@@ -1,6 +1,9 @@
 package output
 
 import (
+	"io"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -43,6 +46,28 @@ func (c RuntimeContext) GetString(key string) string {
 	return ""
 }
 
+func (c RuntimeContext) GetStrings(key string) []string {
+	if val, ok := c.store[key].(*[]string); ok && val != nil {
+		return *val
+	}
+
+	return nil
+}
+
+func (c RuntimeContext) GetWriter(key string) io.Writer {
+	if val, ok := c.store[key].(io.Writer); ok {
+		return val
+	}
+
+	return nil
+}
+
+func (c RuntimeContext) OutputSelected(name Name) bool {
+	return slices.ContainsFunc(c.GetStrings(string(SelectionKey)), func(value string) bool {
+		return Name(strings.TrimSpace(value)) == name
+	})
+}
+
 func (c RuntimeContext) Set(key string, ptr any) { c.store[key] = ptr }
 
 type ExtensionHook struct {
@@ -62,4 +87,12 @@ func Register(name string, hook ExtensionHook) {
 	registryMu.Lock()
 	defer registryMu.Unlock()
 	Registry[name] = hook
+}
+
+func Get(name Name) (ExtensionHook, bool) {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+
+	hook, ok := Registry[string(name)]
+	return hook, ok
 }

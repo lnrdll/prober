@@ -13,7 +13,7 @@ import (
 var (
 	runConfigPath       string
 	failOnTargetFailure bool
-	showSummary         bool
+	runOutputs          []string
 	globalRunCtx        = output.NewRuntimeContext()
 )
 
@@ -21,6 +21,8 @@ var runCmd = &cobra.Command{
 	Use:   "run",
 	Short: "Run probes from a target manifest.",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		globalRunCtx.Set(output.StdoutWriterKey, cmd.OutOrStdout())
+
 		cfg, err := loadConfig(runConfigPath)
 		if err != nil {
 			return err
@@ -29,13 +31,37 @@ var runCmd = &cobra.Command{
 			return fmt.Errorf("validate config: %w", err)
 		}
 
+		selectedOutputs, err := output.ParseSelections(runOutputs)
+		if err != nil {
+			return err
+		}
+
+		for _, name := range output.Names() {
+			hook, ok := output.Get(name)
+			if !ok || hook.SetupFlags == nil {
+				continue
+			}
+
+			configuredValue := globalRunCtx.GetString(string(name))
+			if globalRunCtx.OutputSelected(name) && configuredValue == "" {
+				return fmt.Errorf("--%s is required when -o %s is set", name, name)
+			}
+			if !globalRunCtx.OutputSelected(name) && configuredValue != "" {
+				return fmt.Errorf("--%s requires -o %s", name, name)
+			}
+		}
+
 		compiledTargets, err := prober.CompileTargetAssertions(cfg.Targets)
 		if err != nil {
 			return fmt.Errorf("compile probe assertions: %w", err)
 		}
 
 		var activePublishers []output.Publisher
-		for name, hook := range output.Registry {
+		for _, name := range selectedOutputs {
+			hook, ok := output.Get(name)
+			if !ok {
+				return fmt.Errorf("initialize output %q: not registered", name)
+			}
 			pub, err := hook.Factory(globalRunCtx)
 			if err != nil {
 				return fmt.Errorf("initialize output %q: %w", name, err)
@@ -45,10 +71,14 @@ var runCmd = &cobra.Command{
 			}
 		}
 
-		if len(activePublishers) == 0 {
-			stdoutFallback, err := output.Registry["stdout"].Factory(globalRunCtx)
+		if len(selectedOutputs) == 0 {
+			stdoutHook, ok := output.Get(output.OutputStdout)
+			if !ok {
+				return fmt.Errorf("initialize default output %q: not registered", output.OutputStdout)
+			}
+			stdoutFallback, err := stdoutHook.Factory(globalRunCtx)
 			if err != nil {
-				return fmt.Errorf("initialize default output %q: %w", "stdout", err)
+				return fmt.Errorf("initialize default output %q: %w", output.OutputStdout, err)
 			}
 			if stdoutFallback != nil {
 				activePublishers = append(activePublishers, stdoutFallback)
@@ -56,9 +86,6 @@ var runCmd = &cobra.Command{
 		}
 
 		summary := prober.Execute(compiledTargets, activePublishers)
-		if showSummary {
-			printSummary(cmd, summary)
-		}
 
 		for _, pub := range activePublishers {
 			if err := pub.Close(); err != nil {
@@ -77,7 +104,8 @@ var runCmd = &cobra.Command{
 func init() {
 	addConfigFlag(runCmd, &runConfigPath)
 	runCmd.Flags().BoolVar(&failOnTargetFailure, "fail-on-target-failure", false, "Exit non-zero when any target fails")
-	runCmd.Flags().BoolVar(&showSummary, "summary", false, "Print a run summary after execution")
+	runCmd.Flags().StringArrayVarP(&runOutputs, "output", "o", nil, "Enable an output backend (repeatable): "+output.JoinNames(output.Names()))
+	globalRunCtx.Set(string(output.SelectionKey), &runOutputs)
 
 	output.LinkFlagBinders(
 		func(name, value, usage string, target *string) { runCmd.Flags().StringVar(target, name, value, usage) },
@@ -90,22 +118,5 @@ func init() {
 		if hook.SetupFlags != nil {
 			hook.SetupFlags(globalRunCtx, func(bindFunc func()) { bindFunc() })
 		}
-	}
-}
-
-func printSummary(cmd *cobra.Command, summary prober.Summary) {
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Summary: total=%d passed=%d failed=%d skipped=%d duration=%s\n", summary.Total, summary.Passed, summary.Failed, summary.Skipped, summary.Duration.Round(1e6))
-	for _, res := range summary.Results {
-		if res.Up {
-			continue
-		}
-		reason := res.Error
-		if reason == "" {
-			reason = res.FailedAssertion
-		}
-		if reason == "" {
-			reason = "unknown failure"
-		}
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "FAILED %s status=%d reason=%s\n", res.URL, res.Status, reason)
 	}
 }

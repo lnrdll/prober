@@ -2,6 +2,7 @@ package output
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"time"
 )
@@ -11,18 +12,22 @@ type FilePublisher struct {
 }
 
 func init() {
-	Register("file", ExtensionHook{
+	Register(string(OutputFile), ExtensionHook{
 		SetupFlags: func(ctx RuntimeContext, registerFlag func(func())) {
 			path := new(string)
-			ctx.Set("log_file_path", path)
+			ctx.Set(string(OutputFile), path)
 			registerFlag(func() {
-				BindStringFlag("log-file", "", "Append structured JSON log lines to a file", path)
+				BindStringFlag(string(OutputFile), "", "Append structured JSON log lines to a file", path)
 			})
 		},
 		Factory: func(ctx RuntimeContext) (Publisher, error) {
-			path := ctx.GetString("log_file_path")
-			if path == "" {
+			if !ctx.OutputSelected(OutputFile) {
 				return nil, nil
+			}
+
+			path := ctx.GetString(string(OutputFile))
+			if path == "" {
+				return nil, fmt.Errorf("--%s is required when -o %s is set", OutputFile, OutputFile)
 			}
 			f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 			if err != nil {

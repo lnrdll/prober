@@ -11,14 +11,9 @@ type StdoutPublisher struct {
 }
 
 func init() {
-	Register("stdout", ExtensionHook{
-		SetupFlags: func(ctx RuntimeContext, registerFlag func(func())) {
-			f := new(bool)
-			ctx.Set("enable_stdout", f)
-			registerFlag(func() { BindBoolFlag("stdout", true, "Output structured JSON log lines directly to stdout", f) })
-		},
+	Register(string(OutputStdout), ExtensionHook{
 		Factory: func(ctx RuntimeContext) (Publisher, error) {
-			if !ctx.GetBool("enable_stdout") {
+			if len(ctx.GetStrings(string(SelectionKey))) > 0 && !ctx.OutputSelected(OutputStdout) {
 				return nil, nil
 			}
 			return &StdoutPublisher{logger: slog.New(slog.NewJSONHandler(os.Stdout, nil))}, nil

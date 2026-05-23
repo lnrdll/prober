@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/lnrdll/prober/internal/output"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -14,22 +16,31 @@ import (
 func TestRunCmdRunE(t *testing.T) {
 	oldPath := runConfigPath
 	oldFail := failOnTargetFailure
-	oldSummary := showSummary
+	oldOutputs := append([]string(nil), runOutputs...)
+	oldOut := runCmd.OutOrStdout()
+	fileOutput := ""
+	datadogOutput := ""
+	gcpOutput := ""
+	globalRunCtx.Set(string(output.OutputFile), &fileOutput)
+	globalRunCtx.Set(string(output.OutputStatsdDatadog), &datadogOutput)
+	globalRunCtx.Set(string(output.OutputStatsdGCP), &gcpOutput)
 	defer func() {
 		runConfigPath = oldPath
 		failOnTargetFailure = oldFail
-		showSummary = oldSummary
+		runOutputs = oldOutputs
+		runCmd.SetOut(oldOut)
 	}()
-
-	disabled := false
-	globalRunCtx.Set("enable_stdout", &disabled)
 
 	t.Run("prints summary and succeeds when failures are allowed", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "targets.yaml")
+		filePath := filepath.Join(t.TempDir(), "prober.log")
 		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: failing\n    url: https://example.com\n    assertions:\n      - status == 500\n"), 0644))
 		runConfigPath = path
 		failOnTargetFailure = false
-		showSummary = true
+		runOutputs = []string{string(output.OutputSummary), string(output.OutputFile)}
+		fileOutput = filePath
+		datadogOutput = ""
+		gcpOutput = ""
 
 		buf := &bytes.Buffer{}
 		runCmd.SetOut(buf)
@@ -40,12 +51,46 @@ func TestRunCmdRunE(t *testing.T) {
 		assert.Contains(t, buf.String(), "FAILED https://example.com")
 	})
 
-	t.Run("returns error when failures are enforced", func(t *testing.T) {
+	t.Run("summary output suppresses default stdout output", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "targets.yaml")
 		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: failing\n    url: https://example.com\n    assertions:\n      - status == 500\n"), 0644))
 		runConfigPath = path
+		failOnTargetFailure = false
+		runOutputs = []string{string(output.OutputSummary)}
+		fileOutput = ""
+		datadogOutput = ""
+		gcpOutput = ""
+
+		buf := &bytes.Buffer{}
+		runCmd.SetOut(buf)
+
+		stdout := os.Stdout
+		r, w, err := os.Pipe()
+		require.NoError(t, err)
+		os.Stdout = w
+
+		err = runCmd.RunE(runCmd, nil)
+		require.NoError(t, err)
+		require.NoError(t, w.Close())
+		os.Stdout = stdout
+
+		stdoutData, readErr := io.ReadAll(r)
+		require.NoError(t, readErr)
+		assert.Empty(t, string(stdoutData))
+		assert.Contains(t, buf.String(), "Summary: total=1")
+		assert.Contains(t, buf.String(), "FAILED https://example.com")
+	})
+
+	t.Run("returns error when failures are enforced", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "targets.yaml")
+		filePath := filepath.Join(t.TempDir(), "prober.log")
+		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: failing\n    url: https://example.com\n    assertions:\n      - status == 500\n"), 0644))
+		runConfigPath = path
 		failOnTargetFailure = true
-		showSummary = true
+		runOutputs = []string{string(output.OutputSummary), string(output.OutputFile)}
+		fileOutput = filePath
+		datadogOutput = ""
+		gcpOutput = ""
 
 		buf := &bytes.Buffer{}
 		runCmd.SetOut(buf)
@@ -60,18 +105,26 @@ func TestRunCmdRunE(t *testing.T) {
 		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: test\n    url: https://example.com\n    method: get\n"), 0644))
 		runConfigPath = path
 		failOnTargetFailure = true
+		runOutputs = []string{string(output.OutputFile)}
+		fileOutput = filepath.Join(t.TempDir(), "prober.log")
+		datadogOutput = ""
+		gcpOutput = ""
 
 		err := runCmd.RunE(runCmd, nil)
 		assert.ErrorContains(t, err, "validate config")
 		assert.ErrorContains(t, err, "method must be uppercase")
 	})
 
-	t.Run("suppresses summary when disabled", func(t *testing.T) {
+	t.Run("does not print summary when summary output is not selected", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "targets.yaml")
+		filePath := filepath.Join(t.TempDir(), "prober.log")
 		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: passing\n    url: https://example.com\n    assertions:\n      - status == 200\n"), 0644))
 		runConfigPath = path
 		failOnTargetFailure = true
-		showSummary = false
+		runOutputs = []string{string(output.OutputFile)}
+		fileOutput = filePath
+		datadogOutput = ""
+		gcpOutput = ""
 
 		buf := &bytes.Buffer{}
 		runCmd.SetOut(buf)
@@ -79,6 +132,68 @@ func TestRunCmdRunE(t *testing.T) {
 		err := runCmd.RunE(runCmd, nil)
 		require.NoError(t, err)
 		assert.Empty(t, buf.String())
+	})
+
+	t.Run("prints summary when selected as an output", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "targets.yaml")
+		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: failing\n    url: https://example.com\n    assertions:\n      - status == 500\n"), 0644))
+		runConfigPath = path
+		failOnTargetFailure = false
+		runOutputs = []string{string(output.OutputSummary)}
+		fileOutput = ""
+		datadogOutput = ""
+		gcpOutput = ""
+
+		buf := &bytes.Buffer{}
+		runCmd.SetOut(buf)
+
+		err := runCmd.RunE(runCmd, nil)
+		require.NoError(t, err)
+		assert.Contains(t, buf.String(), "Summary: total=1")
+		assert.Contains(t, buf.String(), "FAILED https://example.com")
+	})
+
+	t.Run("errors on unknown output", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "targets.yaml")
+		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: passing\n    url: https://example.com\n"), 0644))
+		runConfigPath = path
+		failOnTargetFailure = false
+		runOutputs = []string{"unknown"}
+		fileOutput = ""
+		datadogOutput = ""
+		gcpOutput = ""
+
+		err := runCmd.RunE(runCmd, nil)
+		assert.ErrorContains(t, err, "invalid output")
+		assert.ErrorContains(t, err, string(output.OutputStdout))
+	})
+
+	t.Run("requires config when output is selected", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "targets.yaml")
+		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: passing\n    url: https://example.com\n"), 0644))
+		runConfigPath = path
+		failOnTargetFailure = false
+		runOutputs = []string{string(output.OutputFile)}
+		fileOutput = ""
+		datadogOutput = ""
+		gcpOutput = ""
+
+		err := runCmd.RunE(runCmd, nil)
+		assert.ErrorContains(t, err, "--file is required when -o file is set")
+	})
+
+	t.Run("requires output selection when config is provided", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "targets.yaml")
+		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: passing\n    url: https://example.com\n"), 0644))
+		runConfigPath = path
+		failOnTargetFailure = false
+		runOutputs = nil
+		fileOutput = filepath.Join(t.TempDir(), "prober.log")
+		datadogOutput = ""
+		gcpOutput = ""
+
+		err := runCmd.RunE(runCmd, nil)
+		assert.ErrorContains(t, err, "--file requires -o file")
 	})
 }
 
