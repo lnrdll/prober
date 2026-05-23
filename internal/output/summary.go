@@ -8,12 +8,13 @@ import (
 )
 
 type Summary struct {
-	Total    int
-	Passed   int
-	Failed   int
-	Skipped  int
-	Duration time.Duration
-	Results  []Result
+	Total          int
+	Passed         int
+	Failed         int
+	Skipped        int
+	Duration       time.Duration
+	Results        []Result
+	SkippedResults []Result
 }
 
 type SummaryPublisher interface {
@@ -54,13 +55,7 @@ func (s *SummaryOutput) PublishSummary(summary Summary) error {
 			continue
 		}
 
-		reason := res.Error
-		if reason == "" {
-			reason = res.FailedAssertion
-		}
-		if reason == "" {
-			reason = "unknown failure"
-		}
+		reason := failureReason(res)
 
 		if _, err := fmt.Fprintf(s.writer, "FAILED %s status=%d reason=%s\n", res.URL, res.Status, reason); err != nil {
 			return err
@@ -71,3 +66,15 @@ func (s *SummaryOutput) PublishSummary(summary Summary) error {
 }
 
 func (s *SummaryOutput) Close() error { return nil }
+
+func failureReason(res Result) string {
+	reason := res.Error
+	if reason == "" {
+		reason = res.FailedAssertion
+	}
+	if reason == "" {
+		reason = "unknown failure"
+	}
+
+	return reason
+}

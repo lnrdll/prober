@@ -49,6 +49,13 @@ func Execute(targets []config.Target, publishers []output.Publisher) output.Summ
 	for _, target := range targets {
 		if target.Disabled {
 			summary.Skipped++
+			summary.SkippedResults = append(summary.SkippedResults, output.Result{
+				Name:      target.Name,
+				URL:       target.URL,
+				Method:    target.Method,
+				Timestamp: time.Now(),
+				Tags:      target.Tags,
+			})
 			continue // Skip muted entries
 		}
 
@@ -119,6 +126,7 @@ func probeTarget(t config.Target, client *http.Client) output.Result {
 
 func probeTargetOnce(t config.Target, client *http.Client) output.Result {
 	res := output.Result{
+		Name:      t.Name,
 		URL:       t.URL,
 		Method:    t.Method,
 		Timestamp: time.Now(),

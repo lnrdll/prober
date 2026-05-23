@@ -9,6 +9,7 @@ import (
 )
 
 type Result struct {
+	Name            string
 	URL             string
 	Method          string
 	Up              bool

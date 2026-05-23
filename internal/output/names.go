@@ -14,6 +14,7 @@ const (
 	SelectionKey Name = "outputs"
 
 	OutputSummary       Name = "summary"
+	OutputJunit         Name = "junit"
 	OutputStdout        Name = "stdout"
 	OutputFile          Name = "file"
 	OutputStatsdDatadog Name = "statsd-datadog"
@@ -22,6 +23,7 @@ const (
 
 var orderedNames = []Name{
 	OutputSummary,
+	OutputJunit,
 	OutputStdout,
 	OutputFile,
 	OutputStatsdDatadog,

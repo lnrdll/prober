@@ -3,6 +3,7 @@ package output
 import (
 	"bytes"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"log/slog"
 	"os"
@@ -220,6 +221,85 @@ func TestSummaryOutputPublishSummary(t *testing.T) {
 		err := pub.PublishSummary(Summary{Duration: time.Second})
 		assert.ErrorContains(t, err, "boom")
 	})
+}
+
+func TestJUnitOutputFactory(t *testing.T) {
+	hook := Registry[string(OutputJunit)]
+
+	t.Run("returns nil when not selected", func(t *testing.T) {
+		ctx := NewRuntimeContext()
+		ctx.Set(string(OutputJunit), stringPtr("/tmp/report.xml"))
+
+		pub, err := hook.Factory(ctx)
+		require.NoError(t, err)
+		assert.Nil(t, pub)
+	})
+
+	t.Run("errors when selected without config", func(t *testing.T) {
+		selected := []string{string(OutputJunit)}
+		ctx := NewRuntimeContext()
+		ctx.Set(string(SelectionKey), &selected)
+
+		pub, err := hook.Factory(ctx)
+		assert.Nil(t, pub)
+		assert.ErrorContains(t, err, "--junit is required")
+	})
+
+	t.Run("returns publisher when configured", func(t *testing.T) {
+		selected := []string{string(OutputJunit)}
+		path := filepath.Join(t.TempDir(), "report.xml")
+		ctx := NewRuntimeContext()
+		ctx.Set(string(SelectionKey), &selected)
+		ctx.Set(string(OutputJunit), stringPtr(path))
+
+		pub, err := hook.Factory(ctx)
+		require.NoError(t, err)
+		assert.IsType(t, &JUnitOutput{}, pub)
+	})
+}
+
+func TestJUnitOutputPublishSummary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "report.xml")
+	pub := &JUnitOutput{path: path}
+
+	err := pub.PublishSummary(Summary{
+		Total:    2,
+		Passed:   1,
+		Failed:   1,
+		Skipped:  1,
+		Duration: 1500 * time.Millisecond,
+		Results: []Result{
+			{Name: "homepage", URL: "https://example.com", Up: true, Status: 200, LatencyMS: 15, Timestamp: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC), Body: "ok"},
+			{Name: "api", URL: "https://api.example.com", Up: false, Status: 500, LatencyMS: 35, FailedAssertion: "status == 200", Timestamp: time.Date(2026, 1, 2, 3, 4, 6, 0, time.UTC), Body: "failure"},
+		},
+		SkippedResults: []Result{{Name: "disabled-target", URL: "https://disabled.example.com", Timestamp: time.Date(2026, 1, 2, 3, 4, 4, 0, time.UTC)}},
+	})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), xml.Header)
+
+	var report junitTestSuite
+	require.NoError(t, xml.Unmarshal(data, &report))
+	assert.Equal(t, "prober", report.Name)
+	assert.Equal(t, 3, report.Tests)
+	assert.Equal(t, 1, report.Failures)
+	assert.Equal(t, 1, report.Skipped)
+	assert.Equal(t, "1.500", report.Time)
+	assert.Equal(t, "2026-01-02T03:04:04Z", report.Timestamp)
+	require.Len(t, report.TestCases, 3)
+	assert.Equal(t, "disabled-target", report.TestCases[0].Name)
+	assert.NotNil(t, report.TestCases[0].Skipped)
+	assert.Equal(t, "homepage", report.TestCases[1].Name)
+	assert.Nil(t, report.TestCases[1].Failure)
+	assert.Equal(t, "ok", report.TestCases[1].SystemOut)
+	assert.Equal(t, "api", report.TestCases[2].Name)
+	if assert.NotNil(t, report.TestCases[2].Failure) {
+		assert.Equal(t, "status == 200", report.TestCases[2].Failure.Message)
+		assert.Equal(t, "assertion", report.TestCases[2].Failure.Type)
+	}
+	assert.Equal(t, "failure", report.TestCases[2].SystemOut)
 }
 
 func TestStatsdPublisherFactories(t *testing.T) {

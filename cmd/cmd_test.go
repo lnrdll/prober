@@ -19,9 +19,11 @@ func TestRunCmdRunE(t *testing.T) {
 	oldOutputs := append([]string(nil), runOutputs...)
 	oldOut := runCmd.OutOrStdout()
 	fileOutput := ""
+	junitOutput := ""
 	datadogOutput := ""
 	gcpOutput := ""
 	globalRunCtx.Set(string(output.OutputFile), &fileOutput)
+	globalRunCtx.Set(string(output.OutputJunit), &junitOutput)
 	globalRunCtx.Set(string(output.OutputStatsdDatadog), &datadogOutput)
 	globalRunCtx.Set(string(output.OutputStatsdGCP), &gcpOutput)
 	defer func() {
@@ -39,6 +41,7 @@ func TestRunCmdRunE(t *testing.T) {
 		failOnTargetFailure = false
 		runOutputs = []string{string(output.OutputSummary), string(output.OutputFile)}
 		fileOutput = filePath
+		junitOutput = ""
 		datadogOutput = ""
 		gcpOutput = ""
 
@@ -58,6 +61,7 @@ func TestRunCmdRunE(t *testing.T) {
 		failOnTargetFailure = false
 		runOutputs = []string{string(output.OutputSummary)}
 		fileOutput = ""
+		junitOutput = ""
 		datadogOutput = ""
 		gcpOutput = ""
 
@@ -89,6 +93,7 @@ func TestRunCmdRunE(t *testing.T) {
 		failOnTargetFailure = true
 		runOutputs = []string{string(output.OutputSummary), string(output.OutputFile)}
 		fileOutput = filePath
+		junitOutput = ""
 		datadogOutput = ""
 		gcpOutput = ""
 
@@ -107,6 +112,7 @@ func TestRunCmdRunE(t *testing.T) {
 		failOnTargetFailure = true
 		runOutputs = []string{string(output.OutputFile)}
 		fileOutput = filepath.Join(t.TempDir(), "prober.log")
+		junitOutput = ""
 		datadogOutput = ""
 		gcpOutput = ""
 
@@ -123,6 +129,7 @@ func TestRunCmdRunE(t *testing.T) {
 		failOnTargetFailure = true
 		runOutputs = []string{string(output.OutputFile)}
 		fileOutput = filePath
+		junitOutput = ""
 		datadogOutput = ""
 		gcpOutput = ""
 
@@ -141,6 +148,7 @@ func TestRunCmdRunE(t *testing.T) {
 		failOnTargetFailure = false
 		runOutputs = []string{string(output.OutputSummary)}
 		fileOutput = ""
+		junitOutput = ""
 		datadogOutput = ""
 		gcpOutput = ""
 
@@ -153,6 +161,33 @@ func TestRunCmdRunE(t *testing.T) {
 		assert.Contains(t, buf.String(), "FAILED https://example.com")
 	})
 
+	t.Run("writes junit report when selected", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "targets.yaml")
+		reportPath := filepath.Join(t.TempDir(), "report.xml")
+		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: homepage\n    url: https://example.com\n    assertions:\n      - status == 200\n  - name: api\n    url: https://example.com\n    assertions:\n      - status == 500\n"), 0644))
+		runConfigPath = path
+		failOnTargetFailure = false
+		runOutputs = []string{string(output.OutputJunit)}
+		fileOutput = ""
+		junitOutput = reportPath
+		datadogOutput = ""
+		gcpOutput = ""
+
+		buf := &bytes.Buffer{}
+		runCmd.SetOut(buf)
+
+		err := runCmd.RunE(runCmd, nil)
+		require.NoError(t, err)
+		assert.Empty(t, buf.String())
+
+		data, readErr := os.ReadFile(reportPath)
+		require.NoError(t, readErr)
+		assert.Contains(t, string(data), "<testsuite")
+		assert.Contains(t, string(data), "name=\"homepage\"")
+		assert.Contains(t, string(data), "name=\"api\"")
+		assert.Contains(t, string(data), "status == 500")
+	})
+
 	t.Run("errors on unknown output", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "targets.yaml")
 		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: passing\n    url: https://example.com\n"), 0644))
@@ -160,6 +195,7 @@ func TestRunCmdRunE(t *testing.T) {
 		failOnTargetFailure = false
 		runOutputs = []string{"unknown"}
 		fileOutput = ""
+		junitOutput = ""
 		datadogOutput = ""
 		gcpOutput = ""
 
@@ -175,6 +211,7 @@ func TestRunCmdRunE(t *testing.T) {
 		failOnTargetFailure = false
 		runOutputs = []string{string(output.OutputFile)}
 		fileOutput = ""
+		junitOutput = ""
 		datadogOutput = ""
 		gcpOutput = ""
 
@@ -189,11 +226,27 @@ func TestRunCmdRunE(t *testing.T) {
 		failOnTargetFailure = false
 		runOutputs = nil
 		fileOutput = filepath.Join(t.TempDir(), "prober.log")
+		junitOutput = ""
 		datadogOutput = ""
 		gcpOutput = ""
 
 		err := runCmd.RunE(runCmd, nil)
 		assert.ErrorContains(t, err, "--file requires -o file")
+	})
+
+	t.Run("requires junit config when selected", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "targets.yaml")
+		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: passing\n    url: https://example.com\n"), 0644))
+		runConfigPath = path
+		failOnTargetFailure = false
+		runOutputs = []string{string(output.OutputJunit)}
+		fileOutput = ""
+		junitOutput = ""
+		datadogOutput = ""
+		gcpOutput = ""
+
+		err := runCmd.RunE(runCmd, nil)
+		assert.ErrorContains(t, err, "--junit is required when -o junit is set")
 	})
 }
 
