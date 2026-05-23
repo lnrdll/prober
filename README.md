@@ -25,9 +25,9 @@
 - CEL-based assertions
 - Per-target `timeout` and `retries`
 - Default `User-Agent: prober`
-- Summary output for CI logs
-- `lint` command for manifest and assertion validation
-- Output publishers for stdout JSON, file logs, Datadog StatsD, and GCP StatsD
+- `lint` command for manifest parsing and CEL assertion validation
+- Modular outputs selected with repeated `-o, --output`
+- Built-in outputs for summary, JUnit XML, stdout JSON, file logs, Datadog StatsD, and GCP StatsD
 
 ## Installation
 
@@ -56,6 +56,12 @@ go build -o prober .
 go run main.go run -c targets.yaml
 ```
 
+Try the bundled example manifest:
+
+```bash
+go run main.go run -c example.yaml -o summary
+```
+
 ## Usage
 
 `prober` uses subcommands:
@@ -63,6 +69,7 @@ go run main.go run -c targets.yaml
 ```bash
 prober run -c targets.yaml
 prober lint -c targets.yaml
+prober version
 ```
 
 Root help:
@@ -104,6 +111,8 @@ targets:
       - status >= 200 && status < 400
       - ssl_days_left > 7
 ```
+
+A richer example manifest is available at [`example.yaml`](./example.yaml). It uses public endpoints from SampleAPIs and demonstrates every target field, including a disabled target for documentation-only settings.
 
 ## Target fields
 
@@ -172,21 +181,25 @@ prober run -c targets.yaml
 Useful flags:
 
 - `-c, --config`: path to manifest YAML, required
-- `--summary`: print run summary
+- `-o, --output <name>`: enable an output backend, repeatable
 - `--fail-on-target-failure`: exit non-zero when any target fails
-- `--stdout`: emit structured JSON logs to stdout
-- `--log-file <path>`: append structured JSON logs to a file
-- `--datadog-statsd <addr>`: publish metrics to Datadog StatsD
-- `--gcp-statsd <addr>`: publish metrics to GCP Ops Agent StatsD
+- `--file <path>`: configure the `file` output
+- `--junit <path>`: configure the `junit` output
+- `--statsd-datadog <addr>`: configure the `statsd-datadog` output
+- `--statsd-gcp <addr>`: configure the `statsd-gcp` output
 
 Examples:
 
 ```bash
-prober run -c targets.yaml --summary
-prober run -c targets.yaml --summary --fail-on-target-failure
-prober run -c targets.yaml --stdout
-prober run -c targets.yaml --log-file prober.log
-prober run -c targets.yaml --datadog-statsd 127.0.0.1:8125
+prober run -c targets.yaml
+prober run -c targets.yaml -o summary
+prober run -c targets.yaml -o summary --fail-on-target-failure
+prober run -c targets.yaml -o stdout
+prober run -c targets.yaml -o file --file prober.log
+prober run -c targets.yaml -o junit --junit prober.xml
+prober run -c targets.yaml -o statsd-datadog --statsd-datadog 127.0.0.1:8125
+prober run -c targets.yaml -o statsd-gcp --statsd-gcp 127.0.0.1:8125
+prober run -c targets.yaml -o summary -o file --file prober.log
 ```
 
 Summary output looks like:
@@ -198,7 +211,7 @@ FAILED https://example.com status=500 reason=status == 200
 
 ### `prober lint`
 
-Validate manifest structure and CEL assertions without probing:
+Parse the manifest and compile CEL assertions without probing:
 
 ```bash
 prober lint -c targets.yaml
@@ -206,30 +219,44 @@ prober lint -c targets.yaml
 
 ## Output publishers
 
-If no publisher is configured, stdout JSON logging is enabled by default.
+Outputs are selected with repeated `-o, --output` flags. Outputs that need additional configuration use a same-named flag and must be configured when selected, for example `-o file --file prober.log`.
+
+If no output is selected, `stdout` JSON logging is enabled by default.
+
+### Summary
+
+```bash
+prober run -c targets.yaml -o summary
+```
+
+### JUnit XML
+
+```bash
+prober run -c targets.yaml -o junit --junit prober.xml
+```
 
 ### Stdout
 
 ```bash
-prober run -c targets.yaml --stdout
+prober run -c targets.yaml -o stdout
 ```
 
 ### File
 
 ```bash
-prober run -c targets.yaml --log-file prober.log
+prober run -c targets.yaml -o file --file prober.log
 ```
 
 ### Datadog StatsD
 
 ```bash
-prober run -c targets.yaml --datadog-statsd 127.0.0.1:8125
+prober run -c targets.yaml -o statsd-datadog --statsd-datadog 127.0.0.1:8125
 ```
 
 ### GCP StatsD
 
 ```bash
-prober run -c targets.yaml --gcp-statsd 127.0.0.1:8125
+prober run -c targets.yaml -o statsd-gcp --statsd-gcp 127.0.0.1:8125
 ```
 
 ## Behavior notes
@@ -238,6 +265,7 @@ prober run -c targets.yaml --gcp-statsd 127.0.0.1:8125
 - Response bodies are truncated to 1024 bytes before being stored in results.
 - A `Host` header override is supported.
 - Disabled targets are counted as skipped.
+- Selecting any explicit output suppresses the default stdout fallback.
 
 ## Development
 

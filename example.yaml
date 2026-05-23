@@ -1,0 +1,116 @@
+# Example prober manifest using public endpoints from https://sampleapis.com/.
+#
+# This file is intentionally feature-rich:
+# - explicit methods
+# - per-target timeouts and retries
+# - request headers
+# - CEL assertions against status, headers, latency, TLS metadata, and body text
+# - tags for downstream outputs
+# - one disabled target to demonstrate `disabled`, `body`, and `ssl_skip_verify`
+#
+# Note: `body` assertions operate on the first 1024 bytes of the response body,
+# so the checks below intentionally look for strings that appear early.
+
+targets:
+  # A general JSON API probe with several content assertions.
+  - name: presidents-catalog
+    url: https://api.sampleapis.com/presidents/presidents
+    method: GET
+    timeout: 20
+    retries: 1
+    headers:
+      Accept: application/json
+      X-Prober-Example: presidents
+    assertions:
+      - status == 200
+      - headers["Content-Type"].contains("application/json")
+      - body.contains("\"George Washington\"")
+      - body.contains("\"John Adams\"")
+      - latency_ms < 5000
+      - ssl_days_left > 7
+    tags:
+      service: sampleapis
+      dataset: presidents
+      environment: demo
+
+  # A smaller single-resource endpoint that keeps the response body easy to inspect.
+  - name: futurama-fry-profile
+    url: https://api.sampleapis.com/futurama/characters/1
+    method: GET
+    timeout: 15
+    retries: 2
+    headers:
+      Accept: application/json
+      X-Prober-Example: futurama
+    assertions:
+      - status >= 200 && status < 300
+      - headers["Content-Type"].contains("application/json")
+      - body.contains("\"Philip\"")
+      - body.contains("\"Shut up and take my money!\"")
+      - body.contains("\"Human\"")
+      - ssl_days_left > 7
+    tags:
+      service: sampleapis
+      dataset: futurama
+      resource: character
+
+  # Demonstrates array-shaped responses and multiple body contains checks.
+  - name: hot-coffee-menu
+    url: https://api.sampleapis.com/coffee/hot
+    method: GET
+    timeout: 15
+    retries: 1
+    headers:
+      Accept: application/json
+      X-Prober-Example: coffee
+    assertions:
+      - status == 200
+      - headers["Content-Type"].contains("application/json")
+      - body.contains("\"Latte\"")
+      - body.contains("\"Espresso\"")
+      - body.contains("\"Cappuccino\"")
+      - latency_ms < 5000
+    tags:
+      service: sampleapis
+      dataset: coffee
+      locale: sv
+
+  # Omitting assertions demonstrates the default assertion:
+  #   status >= 200 && status < 400
+  - name: css-color-catalog
+    url: https://api.sampleapis.com/csscolornames/colors
+    method: GET
+    timeout: 30
+    retries: 0
+    headers:
+      Accept: application/json
+    tags:
+      service: sampleapis
+      dataset: csscolornames
+      payload: large
+
+  # Disabled targets are skipped at runtime but remain useful as examples.
+  # This one demonstrates request bodies, alternate methods, disabled entries,
+  # and `ssl_skip_verify` without affecting a normal demo run.
+  - name: disabled-post-demo
+    url: https://api.sampleapis.com/coffee/hot
+    method: POST
+    timeout: 5
+    retries: 0
+    disabled: true
+    ssl_skip_verify: true
+    headers:
+      Accept: application/json
+      Content-Type: application/json
+      X-Prober-Example: disabled-post
+    body: |
+      {
+        "note": "This target is disabled and exists only to demonstrate body, POST, and ssl_skip_verify fields."
+      }
+    assertions:
+      - status == 201
+      - body.contains("created")
+    tags:
+      service: sampleapis
+      dataset: coffee
+      purpose: documentation
