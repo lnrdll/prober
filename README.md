@@ -10,12 +10,6 @@
 <p align="center">
 <strong>prober</strong> is a lightweight HTTP(S) uptime probe CLI for CI and monitoring. It reads a YAML manifest, runs probes in parallel, evaluates CEL assertions, publishes results, and can fail the process when any target is down.
 
-<br />
-
-<a href="https://github.com/lnrdll/prober/issues/new?labels=bug&template=bug_report.md">Report Bug</a>
-·
-<a href="https://github.com/lnrdll/prober/issues/new?labels=enhancement&template=feature_request.md">Request Feature</a>
-</p>
 </div>
 
 ## Features
@@ -293,6 +287,10 @@ mise run lint
 mise run build
 mise run build-linux
 ```
+
+## Bugs and Features
+
+With the proliferation of AI agents, simply submit a PR for review that includes bug fixes or new features.
 
 ## License
 
