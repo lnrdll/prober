@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/cel-go/cel"
+	"cel.dev/cel-go/cel"
 	"github.com/lnrdll/prober/internal/config"
 	"github.com/lnrdll/prober/internal/output"
 	"github.com/stretchr/testify/assert"

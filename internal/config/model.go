@@ -1,6 +1,6 @@
 package config
 
-import "github.com/google/cel-go/cel"
+import "cel.dev/cel-go/cel"
 
 type Target struct {
 	Name          string            `yaml:"name"`
