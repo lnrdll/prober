@@ -17,7 +17,10 @@ import (
 
 const defaultTargetTimeoutSeconds = 60
 
-func Execute(targets []config.Target, publishers []output.Publisher) output.Summary {
+// Execute probes every enabled target and returns the summary. It calls publish
+// once per result as each probe finishes, always from the calling goroutine, so
+// calls within one Execute never overlap. Skipped targets are not published.
+func Execute(targets []config.Target, publish func(output.Result)) output.Summary {
 	start := time.Now()
 	summary := output.Summary{Total: len(targets)}
 	// 1. Maintain two global reusable transports for connection pooling
@@ -89,17 +92,10 @@ func Execute(targets []config.Target, publishers []output.Publisher) output.Summ
 		} else {
 			summary.Failed++
 		}
-		for _, pub := range publishers {
-			_ = pub.Publish(res)
-		}
+		publish(res)
 	}
 
 	summary.Duration = time.Since(start)
-	for _, pub := range publishers {
-		if summaryPublisher, ok := pub.(output.SummaryPublisher); ok {
-			_ = summaryPublisher.PublishSummary(summary)
-		}
-	}
 
 	return summary
 }

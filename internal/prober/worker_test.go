@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"testing"
 	"time"
 
@@ -16,20 +15,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-type capturePublisher struct {
-	mu      sync.Mutex
-	results []output.Result
-}
-
-func (p *capturePublisher) Publish(res output.Result) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.results = append(p.results, res)
-	return nil
-}
-
-func (p *capturePublisher) Close() error { return nil }
 
 func TestTargetTimeout(t *testing.T) {
 	tests := []struct {
@@ -372,14 +357,16 @@ func TestExecuteSummary(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	publisher := &capturePublisher{}
-	summary := Execute(compiledTargets, []output.Publisher{publisher})
+	var published []string
+	summary := Execute(compiledTargets, func(res output.Result) {
+		published = append(published, res.Name)
+	})
 
 	assert.Equal(t, 3, summary.Total)
 	assert.Equal(t, 1, summary.Passed)
 	assert.Equal(t, 1, summary.Failed)
 	assert.Equal(t, 1, summary.Skipped)
 	assert.Len(t, summary.Results, 2)
-	assert.Len(t, publisher.results, 2)
+	assert.ElementsMatch(t, []string{"pass", "fail"}, published)
 	assert.GreaterOrEqual(t, summary.Duration, time.Duration(0))
 }

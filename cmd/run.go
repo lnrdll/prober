@@ -86,7 +86,17 @@ var runCmd = &cobra.Command{
 			}
 		}
 
-		summary := prober.Execute(compiledTargets, activePublishers)
+		summary := prober.Execute(compiledTargets, func(res output.Result) {
+			for _, pub := range activePublishers {
+				_ = pub.Publish(res)
+			}
+		})
+
+		for _, pub := range activePublishers {
+			if summaryPublisher, ok := pub.(output.SummaryPublisher); ok {
+				_ = summaryPublisher.PublishSummary(summary)
+			}
+		}
 
 		for _, pub := range activePublishers {
 			if err := pub.Close(); err != nil {
