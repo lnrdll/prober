@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -395,6 +396,131 @@ func TestStatsdPublisherFactories(t *testing.T) {
 	})
 }
 
+func TestStatsdPublishersSendGauges(t *testing.T) {
+	res := Result{URL: "https://example.com", Up: true, Status: 200, LatencyMS: 42, Tags: map[string]string{"environment": "prod", "team": "web"}}
+
+	t.Run("datadog", func(t *testing.T) {
+		conn, addr := listenUDP(t)
+		pub := newStatsdPublisher(t, OutputStatsdDatadog, addr)
+
+		require.NoError(t, pub.Publish(res))
+		require.NoError(t, pub.Close())
+
+		got := readDatagrams(t, conn)
+		assert.Contains(t, got, "custom_monitoring.uptime_prober.status:1|g")
+		assert.Contains(t, got, "custom_monitoring.uptime_prober.latency_ms:42|g")
+	})
+
+	t.Run("gcp", func(t *testing.T) {
+		conn, addr := listenUDP(t)
+		pub := newStatsdPublisher(t, OutputStatsdGCP, addr)
+
+		require.NoError(t, pub.Publish(res))
+		require.NoError(t, pub.Close())
+
+		got := readDatagrams(t, conn)
+		assert.Contains(t, got, "uptime_prober.status.env_prod.team_web:1|g")
+		assert.Contains(t, got, "uptime_prober.latency_ms.env_prod.team_web:42|g")
+	})
+}
+
+func TestStatsdPublishersPublishAfterCloseFails(t *testing.T) {
+	for _, name := range []Name{OutputStatsdDatadog, OutputStatsdGCP} {
+		t.Run(string(name), func(t *testing.T) {
+			_, addr := listenUDP(t)
+			pub := newStatsdPublisher(t, name, addr)
+
+			require.NoError(t, pub.Close())
+			assert.Error(t, pub.Publish(Result{URL: "https://example.com", Up: true}))
+		})
+	}
+}
+
+func TestStatsdPublishersReportSenderErrors(t *testing.T) {
+	for _, name := range []Name{OutputStatsdDatadog, OutputStatsdGCP} {
+		t.Run(string(name), func(t *testing.T) {
+			_, addr := listenUDP(t)
+			pub := newStatsdPublisher(t, name, addr)
+
+			res := Result{URL: "https://example.com", Up: true}
+			refused, full := errors.New("connection refused"), errors.New("queue full")
+			sender := statsdSenderOf(t, pub)
+			sender.recordError(refused)
+			sender.recordError(full)
+
+			err := pub.Publish(res)
+			assert.ErrorIs(t, err, refused)
+			assert.ErrorIs(t, err, full)
+			assert.NoError(t, pub.Publish(res), "errors are returned once")
+
+			sender.recordError(errors.New("write failed"))
+			assert.ErrorContains(t, pub.Close(), "write failed")
+		})
+	}
+}
+
+func TestStatsdPublishersCloseReportsBackgroundSendFailure(t *testing.T) {
+	for _, name := range []Name{OutputStatsdDatadog, OutputStatsdGCP} {
+		t.Run(string(name), func(t *testing.T) {
+			// Nothing listens on this socket, so every background write fails.
+			addr := "unix://" + filepath.Join(t.TempDir(), "missing.sock")
+			pub := newStatsdPublisher(t, name, addr)
+
+			// The aggregator may flush before Close, so the failure can
+			// surface from either call.
+			err := errors.Join(pub.Publish(Result{URL: "https://example.com", Up: true}), pub.Close())
+			assert.ErrorContains(t, err, "missing.sock")
+		})
+	}
+}
+
+func TestStatsdPublisherFactoriesRejectBadAddress(t *testing.T) {
+	for _, name := range []Name{OutputStatsdDatadog, OutputStatsdGCP} {
+		t.Run(string(name), func(t *testing.T) {
+			selected := []string{string(name)}
+			ctx := NewRuntimeContext()
+			ctx.Set(string(SelectionKey), &selected)
+			ctx.Set(string(name), stringPtr("127.0.0.1:not-a-port"))
+
+			pub, err := Registry[string(name)].Factory(ctx)
+			assert.Error(t, err)
+			assert.Nil(t, pub)
+		})
+	}
+}
+
+func TestJUnitOutputWriteFailureReportedOnce(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "regular-file")
+	require.NoError(t, os.WriteFile(parent, []byte("x"), 0o644))
+	pub := &JUnitOutput{path: filepath.Join(parent, "report.xml")}
+
+	assert.Error(t, pub.PublishSummary(Summary{Duration: time.Second}))
+	assert.NoError(t, pub.Close())
+
+	// The report path is a directory, so the final write fails.
+	pub = &JUnitOutput{path: t.TempDir()}
+	assert.Error(t, pub.PublishSummary(Summary{Duration: time.Second}))
+	assert.NoError(t, pub.Close())
+}
+
+func TestStdoutPublisherWritesToRuntimeWriter(t *testing.T) {
+	var buf bytes.Buffer
+	selected := []string{string(OutputStdout)}
+	ctx := NewRuntimeContext()
+	ctx.Set(string(SelectionKey), &selected)
+	ctx.Set(StdoutWriterKey, &buf)
+
+	pub, err := Registry[string(OutputStdout)].Factory(ctx)
+	require.NoError(t, err)
+	require.NoError(t, pub.Publish(Result{URL: "http://example.com", Up: true, Status: 200}))
+	require.NoError(t, pub.Close())
+
+	var line map[string]any
+	require.NoError(t, json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &line))
+	assert.Equal(t, "http://example.com", line["url"])
+	assert.Equal(t, "Uptime check passed", line["msg"])
+}
+
 func TestStdoutPublisherPublish(t *testing.T) {
 	var buf bytes.Buffer
 	pub := &StdoutPublisher{logger: slog.New(slog.NewJSONHandler(&buf, nil))}
@@ -418,6 +544,54 @@ func TestStdoutPublisherPublish(t *testing.T) {
 	assert.Equal(t, "boom", second["error"])
 	assert.Equal(t, "status == 200", second["failed_assertion"])
 	assert.NoError(t, pub.Close())
+}
+
+func listenUDP(t *testing.T) (net.PacketConn, string) {
+	t.Helper()
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	return conn, conn.LocalAddr().String()
+}
+
+func readDatagrams(t *testing.T, conn net.PacketConn) string {
+	t.Helper()
+	var got bytes.Buffer
+	buf := make([]byte, 65535)
+	for {
+		require.NoError(t, conn.SetReadDeadline(time.Now().Add(500*time.Millisecond)))
+		n, _, err := conn.ReadFrom(buf)
+		if err != nil {
+			return got.String()
+		}
+		got.Write(buf[:n])
+		got.WriteByte('\n')
+	}
+}
+
+func newStatsdPublisher(t *testing.T, name Name, addr string) Publisher {
+	t.Helper()
+	selected := []string{string(name)}
+	ctx := NewRuntimeContext()
+	ctx.Set(string(SelectionKey), &selected)
+	ctx.Set(string(name), stringPtr(addr))
+
+	pub, err := Registry[string(name)].Factory(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, pub)
+	return pub
+}
+
+func statsdSenderOf(t *testing.T, pub Publisher) *statsdSender {
+	t.Helper()
+	switch p := pub.(type) {
+	case *DatadogStatsDPublisher:
+		return p.sender
+	case *GCPStatsDPublisher:
+		return p.sender
+	}
+	t.Fatalf("not a statsd publisher: %T", pub)
+	return nil
 }
 
 type failingWriter struct{}

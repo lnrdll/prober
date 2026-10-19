@@ -11,7 +11,6 @@ import (
 
 type JUnitOutput struct {
 	path string
-	err  error
 }
 
 type junitTestSuite struct {
@@ -72,7 +71,6 @@ func (j *JUnitOutput) Publish(Result) error { return nil }
 
 func (j *JUnitOutput) PublishSummary(summary Summary) error {
 	if err := os.MkdirAll(filepath.Dir(j.path), 0o755); err != nil {
-		j.err = err
 		return err
 	}
 
@@ -120,16 +118,15 @@ func (j *JUnitOutput) PublishSummary(summary Summary) error {
 
 	data, err := xml.MarshalIndent(report, "", "  ")
 	if err != nil {
-		j.err = err
 		return err
 	}
 
 	data = append([]byte(xml.Header), append(data, '\n')...)
-	j.err = os.WriteFile(j.path, data, 0o644)
-	return j.err
+	return os.WriteFile(j.path, data, 0o644)
 }
 
-func (j *JUnitOutput) Close() error { return j.err }
+// Close returns nil: a failed write is reported once, by PublishSummary.
+func (j *JUnitOutput) Close() error { return nil }
 
 func formatJUnitDuration(duration time.Duration) string {
 	return strconv.FormatFloat(duration.Seconds(), 'f', 3, 64)

@@ -16,7 +16,13 @@ func init() {
 			if len(ctx.GetStrings(string(SelectionKey))) > 0 && !ctx.OutputSelected(OutputStdout) {
 				return nil, nil
 			}
-			return &StdoutPublisher{logger: slog.New(slog.NewJSONHandler(os.Stdout, nil))}, nil
+
+			writer := ctx.GetWriter(StdoutWriterKey)
+			if writer == nil {
+				writer = os.Stdout
+			}
+
+			return &StdoutPublisher{logger: slog.New(slog.NewJSONHandler(writer, nil))}, nil
 		},
 	})
 }

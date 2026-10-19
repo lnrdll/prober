@@ -1,13 +1,9 @@
 package output
 
-import (
-	"fmt"
-
-	"github.com/DataDog/datadog-go/v5/statsd"
-)
+import "fmt"
 
 type GCPStatsDPublisher struct {
-	client *statsd.Client
+	sender *statsdSender
 }
 
 func init() {
@@ -29,8 +25,11 @@ func init() {
 				return nil, fmt.Errorf("--%s is required when -o %s is set", OutputStatsdGCP, OutputStatsdGCP)
 			}
 
-			c, err := statsd.New(addr)
-			return &GCPStatsDPublisher{client: c}, err
+			sender, err := newStatsdSender(addr)
+			if err != nil {
+				return nil, err
+			}
+			return &GCPStatsDPublisher{sender: sender}, nil
 		},
 	})
 }
@@ -56,9 +55,10 @@ func (p *GCPStatsDPublisher) Publish(res Result) error {
 		statusMetricVal = 1.0
 	}
 
-	_ = p.client.Gauge(metricNameStatus, statusMetricVal, tagsList, 1.0)
-	_ = p.client.Gauge(metricNameLatency, float64(res.LatencyMS), tagsList, 1.0)
-	return nil
+	return p.sender.gauges(
+		statsdGauge{name: metricNameStatus, value: statusMetricVal, tags: tagsList},
+		statsdGauge{name: metricNameLatency, value: float64(res.LatencyMS), tags: tagsList},
+	)
 }
 
-func (p *GCPStatsDPublisher) Close() error { return p.client.Flush() }
+func (p *GCPStatsDPublisher) Close() error { return p.sender.close() }
