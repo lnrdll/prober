@@ -3,6 +3,8 @@ package cmd
 import (
 	"bytes"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -18,18 +20,12 @@ func TestRunCmdRunE(t *testing.T) {
 	oldFail := failOnTargetFailure
 	oldOutputs := append([]string(nil), runOutputs...)
 	oldOut := runCmd.OutOrStdout()
-	fileOutput := output.DefaultFilePath
-	junitOutput := output.DefaultJUnitPath
-	datadogOutput := output.DefaultStatsDAddr
-	gcpOutput := output.DefaultStatsDAddr
-	globalRunCtx.Set(string(output.OutputFile), &fileOutput)
-	globalRunCtx.Set(string(output.OutputJunit), &junitOutput)
-	globalRunCtx.Set(string(output.OutputStatsdDatadog), &datadogOutput)
-	globalRunCtx.Set(string(output.OutputStatsdGCP), &gcpOutput)
+	oldFilePath, oldJUnitPath, oldDatadogAddr, oldGCPAddr := runFilePath, runJUnitPath, runDatadogAddr, runGCPAddr
 	defer func() {
 		runConfigPath = oldPath
 		failOnTargetFailure = oldFail
 		runOutputs = oldOutputs
+		runFilePath, runJUnitPath, runDatadogAddr, runGCPAddr = oldFilePath, oldJUnitPath, oldDatadogAddr, oldGCPAddr
 		runCmd.SetOut(oldOut)
 		resetOutputFlagState(t)
 	}()
@@ -42,10 +38,10 @@ func TestRunCmdRunE(t *testing.T) {
 		failOnTargetFailure = false
 		resetOutputFlagState(t)
 		runOutputs = []string{string(output.OutputSummary), string(output.OutputFile)}
-		fileOutput = filePath
-		junitOutput = output.DefaultJUnitPath
-		datadogOutput = output.DefaultStatsDAddr
-		gcpOutput = output.DefaultStatsDAddr
+		runFilePath = filePath
+		runJUnitPath = output.DefaultJUnitPath
+		runDatadogAddr = output.DefaultStatsDAddr
+		runGCPAddr = output.DefaultStatsDAddr
 
 		buf := &bytes.Buffer{}
 		runCmd.SetOut(buf)
@@ -63,10 +59,10 @@ func TestRunCmdRunE(t *testing.T) {
 		failOnTargetFailure = false
 		resetOutputFlagState(t)
 		runOutputs = []string{string(output.OutputSummary)}
-		fileOutput = output.DefaultFilePath
-		junitOutput = output.DefaultJUnitPath
-		datadogOutput = output.DefaultStatsDAddr
-		gcpOutput = output.DefaultStatsDAddr
+		runFilePath = output.DefaultFilePath
+		runJUnitPath = output.DefaultJUnitPath
+		runDatadogAddr = output.DefaultStatsDAddr
+		runGCPAddr = output.DefaultStatsDAddr
 
 		buf := &bytes.Buffer{}
 		runCmd.SetOut(buf)
@@ -96,10 +92,10 @@ func TestRunCmdRunE(t *testing.T) {
 		failOnTargetFailure = true
 		resetOutputFlagState(t)
 		runOutputs = []string{string(output.OutputSummary), string(output.OutputFile)}
-		fileOutput = filePath
-		junitOutput = output.DefaultJUnitPath
-		datadogOutput = output.DefaultStatsDAddr
-		gcpOutput = output.DefaultStatsDAddr
+		runFilePath = filePath
+		runJUnitPath = output.DefaultJUnitPath
+		runDatadogAddr = output.DefaultStatsDAddr
+		runGCPAddr = output.DefaultStatsDAddr
 
 		buf := &bytes.Buffer{}
 		runCmd.SetOut(buf)
@@ -116,10 +112,10 @@ func TestRunCmdRunE(t *testing.T) {
 		failOnTargetFailure = true
 		resetOutputFlagState(t)
 		runOutputs = []string{string(output.OutputFile)}
-		fileOutput = filepath.Join(t.TempDir(), "prober.log")
-		junitOutput = output.DefaultJUnitPath
-		datadogOutput = output.DefaultStatsDAddr
-		gcpOutput = output.DefaultStatsDAddr
+		runFilePath = filepath.Join(t.TempDir(), "prober.log")
+		runJUnitPath = output.DefaultJUnitPath
+		runDatadogAddr = output.DefaultStatsDAddr
+		runGCPAddr = output.DefaultStatsDAddr
 
 		err := runCmd.RunE(runCmd, nil)
 		assert.ErrorContains(t, err, "validate config")
@@ -134,10 +130,10 @@ func TestRunCmdRunE(t *testing.T) {
 		failOnTargetFailure = true
 		resetOutputFlagState(t)
 		runOutputs = []string{string(output.OutputFile)}
-		fileOutput = filePath
-		junitOutput = output.DefaultJUnitPath
-		datadogOutput = output.DefaultStatsDAddr
-		gcpOutput = output.DefaultStatsDAddr
+		runFilePath = filePath
+		runJUnitPath = output.DefaultJUnitPath
+		runDatadogAddr = output.DefaultStatsDAddr
+		runGCPAddr = output.DefaultStatsDAddr
 
 		buf := &bytes.Buffer{}
 		runCmd.SetOut(buf)
@@ -154,10 +150,10 @@ func TestRunCmdRunE(t *testing.T) {
 		failOnTargetFailure = false
 		resetOutputFlagState(t)
 		runOutputs = []string{string(output.OutputSummary)}
-		fileOutput = output.DefaultFilePath
-		junitOutput = output.DefaultJUnitPath
-		datadogOutput = output.DefaultStatsDAddr
-		gcpOutput = output.DefaultStatsDAddr
+		runFilePath = output.DefaultFilePath
+		runJUnitPath = output.DefaultJUnitPath
+		runDatadogAddr = output.DefaultStatsDAddr
+		runGCPAddr = output.DefaultStatsDAddr
 
 		buf := &bytes.Buffer{}
 		runCmd.SetOut(buf)
@@ -176,10 +172,10 @@ func TestRunCmdRunE(t *testing.T) {
 		failOnTargetFailure = false
 		resetOutputFlagState(t)
 		runOutputs = []string{string(output.OutputJunit)}
-		fileOutput = output.DefaultFilePath
-		junitOutput = reportPath
-		datadogOutput = output.DefaultStatsDAddr
-		gcpOutput = output.DefaultStatsDAddr
+		runFilePath = output.DefaultFilePath
+		runJUnitPath = reportPath
+		runDatadogAddr = output.DefaultStatsDAddr
+		runGCPAddr = output.DefaultStatsDAddr
 
 		buf := &bytes.Buffer{}
 		runCmd.SetOut(buf)
@@ -203,10 +199,10 @@ func TestRunCmdRunE(t *testing.T) {
 		failOnTargetFailure = false
 		resetOutputFlagState(t)
 		runOutputs = []string{"unknown"}
-		fileOutput = output.DefaultFilePath
-		junitOutput = output.DefaultJUnitPath
-		datadogOutput = output.DefaultStatsDAddr
-		gcpOutput = output.DefaultStatsDAddr
+		runFilePath = output.DefaultFilePath
+		runJUnitPath = output.DefaultJUnitPath
+		runDatadogAddr = output.DefaultStatsDAddr
+		runGCPAddr = output.DefaultStatsDAddr
 
 		err := runCmd.RunE(runCmd, nil)
 		assert.ErrorContains(t, err, "invalid output")
@@ -220,10 +216,10 @@ func TestRunCmdRunE(t *testing.T) {
 		failOnTargetFailure = false
 		resetOutputFlagState(t)
 		runOutputs = []string{string(output.OutputFile)}
-		fileOutput = output.DefaultFilePath
-		junitOutput = output.DefaultJUnitPath
-		datadogOutput = output.DefaultStatsDAddr
-		gcpOutput = output.DefaultStatsDAddr
+		runFilePath = output.DefaultFilePath
+		runJUnitPath = output.DefaultJUnitPath
+		runDatadogAddr = output.DefaultStatsDAddr
+		runGCPAddr = output.DefaultStatsDAddr
 		defer func() { _ = os.Remove(output.DefaultFilePath) }()
 
 		err := runCmd.RunE(runCmd, nil)
@@ -237,11 +233,11 @@ func TestRunCmdRunE(t *testing.T) {
 		failOnTargetFailure = false
 		resetOutputFlagState(t)
 		runOutputs = nil
-		fileOutput = filepath.Join(t.TempDir(), "prober.log")
-		junitOutput = output.DefaultJUnitPath
-		datadogOutput = output.DefaultStatsDAddr
-		gcpOutput = output.DefaultStatsDAddr
-		require.NoError(t, runCmd.Flags().Set(string(output.OutputFile), fileOutput))
+		runFilePath = filepath.Join(t.TempDir(), "prober.log")
+		runJUnitPath = output.DefaultJUnitPath
+		runDatadogAddr = output.DefaultStatsDAddr
+		runGCPAddr = output.DefaultStatsDAddr
+		require.NoError(t, runCmd.Flags().Set(string(output.OutputFile), runFilePath))
 
 		err := runCmd.RunE(runCmd, nil)
 		assert.ErrorContains(t, err, "--file requires -o file")
@@ -254,14 +250,14 @@ func TestRunCmdRunE(t *testing.T) {
 		failOnTargetFailure = false
 		resetOutputFlagState(t)
 		runOutputs = []string{string(output.OutputJunit)}
-		fileOutput = output.DefaultFilePath
-		junitOutput = filepath.Join(t.TempDir(), output.DefaultJUnitPath)
-		datadogOutput = output.DefaultStatsDAddr
-		gcpOutput = output.DefaultStatsDAddr
+		runFilePath = output.DefaultFilePath
+		runJUnitPath = filepath.Join(t.TempDir(), output.DefaultJUnitPath)
+		runDatadogAddr = output.DefaultStatsDAddr
+		runGCPAddr = output.DefaultStatsDAddr
 
 		err := runCmd.RunE(runCmd, nil)
 		require.NoError(t, err)
-		_, statErr := os.Stat(junitOutput)
+		_, statErr := os.Stat(runJUnitPath)
 		require.NoError(t, statErr)
 	})
 
@@ -272,6 +268,55 @@ func TestRunCmdRunE(t *testing.T) {
 		assert.Equal(t, output.DefaultStatsDAddr, runCmd.Flags().Lookup(string(output.OutputStatsdDatadog)).DefValue)
 		assert.Equal(t, output.DefaultStatsDAddr, runCmd.Flags().Lookup(string(output.OutputStatsdGCP)).DefValue)
 	})
+}
+
+func TestRunCmdReturnsOutputFailureWhenTargetFailuresAreAllowed(t *testing.T) {
+	out, err := runWithUnwritableJUnit(t, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "output errors:\n  junit: publish summary failed: ")
+	assert.NotContains(t, err.Error(), "target(s) failed")
+	assert.Contains(t, out, "Summary: total=1 passed=0 failed=1")
+}
+
+func TestRunCmdReportsOutputFailureBeforeTargetFailures(t *testing.T) {
+	_, err := runWithUnwritableJUnit(t, true)
+	require.Error(t, err)
+	assert.Regexp(t, `^output errors:\n  junit: publish summary failed: .+\n1 target\(s\) failed$`, err.Error())
+}
+
+// runWithUnwritableJUnit runs one failing target against a local server with
+// the JUnit report pointed under a regular file, and returns the run's stdout
+// and error.
+func runWithUnwritableJUnit(t *testing.T, failOnTargets bool) (string, error) {
+	t.Helper()
+	oldPath, oldFail, oldOutputs, oldJUnitPath := runConfigPath, failOnTargetFailure, runOutputs, runJUnitPath
+	oldOut := runCmd.OutOrStdout()
+	defer func() {
+		runConfigPath, failOnTargetFailure, runOutputs, runJUnitPath = oldPath, oldFail, oldOutputs, oldJUnitPath
+		runCmd.SetOut(oldOut)
+		resetOutputFlagState(t)
+	}()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	path := filepath.Join(t.TempDir(), "targets.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: failing\n    url: "+server.URL+"\n    assertions:\n      - status == 200\n"), 0644))
+	regularFile := filepath.Join(t.TempDir(), "regular-file")
+	require.NoError(t, os.WriteFile(regularFile, []byte("x"), 0644))
+
+	runConfigPath = path
+	failOnTargetFailure = failOnTargets
+	runOutputs = []string{string(output.OutputSummary), string(output.OutputJunit)}
+	resetOutputFlagState(t)
+	require.NoError(t, runCmd.Flags().Set(string(output.OutputJunit), filepath.Join(regularFile, "report.xml")))
+	buf := &bytes.Buffer{}
+	runCmd.SetOut(buf)
+
+	err := runCmd.RunE(runCmd, nil)
+	return buf.String(), err
 }
 
 func resetOutputFlagState(t *testing.T) {

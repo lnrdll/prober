@@ -2,39 +2,19 @@ package output
 
 import "fmt"
 
-type GCPStatsDPublisher struct {
+type gcpPublisher struct {
 	sender *statsdSender
 }
 
-func init() {
-	Register(string(OutputStatsdGCP), ExtensionHook{
-		SetupFlags: func(ctx RuntimeContext, registerFlag func(func())) {
-			addr := new(string)
-			ctx.Set(string(OutputStatsdGCP), addr)
-			registerFlag(func() {
-				BindStringFlag(string(OutputStatsdGCP), DefaultStatsDAddr, "UDP network address location pointing to local GCP Ops Agent", addr)
-			})
-		},
-		Factory: func(ctx RuntimeContext) (Publisher, error) {
-			if !ctx.OutputSelected(OutputStatsdGCP) {
-				return nil, nil
-			}
-
-			addr := ctx.GetString(string(OutputStatsdGCP))
-			if addr == "" {
-				return nil, fmt.Errorf("--%s is required when -o %s is set", OutputStatsdGCP, OutputStatsdGCP)
-			}
-
-			sender, err := newStatsdSender(addr)
-			if err != nil {
-				return nil, err
-			}
-			return &GCPStatsDPublisher{sender: sender}, nil
-		},
-	})
+func newGCPPublisher(cfg Config) (publisher, error) {
+	sender, err := newStatsdSender(cfg.GCP.Value)
+	if err != nil {
+		return nil, err
+	}
+	return &gcpPublisher{sender: sender}, nil
 }
 
-func (p *GCPStatsDPublisher) Publish(res Result) error {
+func (p *gcpPublisher) Publish(res Result) error {
 	metricNameStatus := "uptime_prober.status"
 	metricNameLatency := "uptime_prober.latency_ms"
 
@@ -61,4 +41,4 @@ func (p *GCPStatsDPublisher) Publish(res Result) error {
 	)
 }
 
-func (p *GCPStatsDPublisher) Close() error { return p.sender.close() }
+func (p *gcpPublisher) Close() error { return p.sender.close() }

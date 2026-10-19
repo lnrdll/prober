@@ -3,7 +3,6 @@ package output
 import (
 	"fmt"
 	"io"
-	"os"
 	"time"
 )
 
@@ -17,34 +16,17 @@ type Summary struct {
 	SkippedResults []Result
 }
 
-type SummaryPublisher interface {
-	PublishSummary(summary Summary) error
-}
-
-type SummaryOutput struct {
+type summaryOutput struct {
 	writer io.Writer
 }
 
-func init() {
-	Register(string(OutputSummary), ExtensionHook{
-		Factory: func(ctx RuntimeContext) (Publisher, error) {
-			if !ctx.OutputSelected(OutputSummary) {
-				return nil, nil
-			}
-
-			writer := ctx.GetWriter(StdoutWriterKey)
-			if writer == nil {
-				writer = os.Stdout
-			}
-
-			return &SummaryOutput{writer: writer}, nil
-		},
-	})
+func newSummaryOutput(cfg Config) (publisher, error) {
+	return &summaryOutput{writer: cfg.Writer}, nil
 }
 
-func (s *SummaryOutput) Publish(Result) error { return nil }
+func (s *summaryOutput) Publish(Result) error { return nil }
 
-func (s *SummaryOutput) PublishSummary(summary Summary) error {
+func (s *summaryOutput) PublishSummary(summary Summary) error {
 	_, err := fmt.Fprintf(s.writer, "Summary: total=%d passed=%d failed=%d skipped=%d duration=%s\n", summary.Total, summary.Passed, summary.Failed, summary.Skipped, summary.Duration.Round(time.Millisecond))
 	if err != nil {
 		return err
@@ -65,7 +47,7 @@ func (s *SummaryOutput) PublishSummary(summary Summary) error {
 	return nil
 }
 
-func (s *SummaryOutput) Close() error { return nil }
+func (s *summaryOutput) Close() error { return nil }
 
 func failureReason(res Result) string {
 	reason := res.Error

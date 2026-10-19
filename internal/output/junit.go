@@ -2,14 +2,13 @@ package output
 
 import (
 	"encoding/xml"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"time"
 )
 
-type JUnitOutput struct {
+type junitOutput struct {
 	path string
 }
 
@@ -43,33 +42,13 @@ type junitSkipped struct {
 	Message string `xml:"message,attr,omitempty"`
 }
 
-func init() {
-	Register(string(OutputJunit), ExtensionHook{
-		SetupFlags: func(ctx RuntimeContext, registerFlag func(func())) {
-			path := new(string)
-			ctx.Set(string(OutputJunit), path)
-			registerFlag(func() {
-				BindStringFlag(string(OutputJunit), DefaultJUnitPath, "Write a JUnit XML report to a file", path)
-			})
-		},
-		Factory: func(ctx RuntimeContext) (Publisher, error) {
-			if !ctx.OutputSelected(OutputJunit) {
-				return nil, nil
-			}
-
-			path := ctx.GetString(string(OutputJunit))
-			if path == "" {
-				return nil, fmt.Errorf("--%s is required when -o %s is set", OutputJunit, OutputJunit)
-			}
-
-			return &JUnitOutput{path: path}, nil
-		},
-	})
+func newJUnitOutput(cfg Config) (publisher, error) {
+	return &junitOutput{path: cfg.JUnit.Value}, nil
 }
 
-func (j *JUnitOutput) Publish(Result) error { return nil }
+func (j *junitOutput) Publish(Result) error { return nil }
 
-func (j *JUnitOutput) PublishSummary(summary Summary) error {
+func (j *junitOutput) PublishSummary(summary Summary) error {
 	if err := os.MkdirAll(filepath.Dir(j.path), 0o755); err != nil {
 		return err
 	}
@@ -126,7 +105,7 @@ func (j *JUnitOutput) PublishSummary(summary Summary) error {
 }
 
 // Close returns nil: a failed write is reported once, by PublishSummary.
-func (j *JUnitOutput) Close() error { return nil }
+func (j *junitOutput) Close() error { return nil }
 
 func formatJUnitDuration(duration time.Duration) string {
 	return strconv.FormatFloat(duration.Seconds(), 'f', 3, 64)

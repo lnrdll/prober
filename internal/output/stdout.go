@@ -3,31 +3,17 @@ package output
 import (
 	"context"
 	"log/slog"
-	"os"
 )
 
-type StdoutPublisher struct {
+type stdoutPublisher struct {
 	logger *slog.Logger
 }
 
-func init() {
-	Register(string(OutputStdout), ExtensionHook{
-		Factory: func(ctx RuntimeContext) (Publisher, error) {
-			if len(ctx.GetStrings(string(SelectionKey))) > 0 && !ctx.OutputSelected(OutputStdout) {
-				return nil, nil
-			}
-
-			writer := ctx.GetWriter(StdoutWriterKey)
-			if writer == nil {
-				writer = os.Stdout
-			}
-
-			return &StdoutPublisher{logger: slog.New(slog.NewJSONHandler(writer, nil))}, nil
-		},
-	})
+func newStdoutPublisher(cfg Config) (publisher, error) {
+	return &stdoutPublisher{logger: slog.New(slog.NewJSONHandler(cfg.Writer, nil))}, nil
 }
 
-func (p *StdoutPublisher) Publish(res Result) error {
+func (p *stdoutPublisher) Publish(res Result) error {
 	logAttrs := []slog.Attr{
 		slog.String("url", res.URL), slog.Bool("up", res.Up), slog.Int("status", res.Status), slog.Int64("latency_ms", res.LatencyMS),
 	}
@@ -49,4 +35,4 @@ func (p *StdoutPublisher) Publish(res Result) error {
 	return nil
 }
 
-func (p *StdoutPublisher) Close() error { return nil }
+func (p *stdoutPublisher) Close() error { return nil }

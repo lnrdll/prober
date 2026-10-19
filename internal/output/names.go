@@ -9,12 +9,9 @@ import (
 type Name string
 
 const (
-	StdoutWriterKey   = "stdout-writer"
 	DefaultFilePath   = "prober.log"
 	DefaultJUnitPath  = "prober.xml"
 	DefaultStatsDAddr = "127.0.0.1:8125"
-
-	SelectionKey Name = "outputs"
 
 	OutputSummary       Name = "summary"
 	OutputJunit         Name = "junit"
@@ -37,11 +34,7 @@ func Names() []Name {
 	return append([]Name(nil), orderedNames...)
 }
 
-func IsKnownName(name Name) bool {
-	return slices.Contains(orderedNames, name)
-}
-
-func ParseSelections(raw []string) ([]Name, error) {
+func parseSelections(raw []string) ([]Name, error) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
@@ -50,7 +43,7 @@ func ParseSelections(raw []string) ([]Name, error) {
 	seen := make(map[Name]struct{}, len(raw))
 	for _, value := range raw {
 		name := Name(strings.TrimSpace(value))
-		if !IsKnownName(name) {
+		if !slices.Contains(orderedNames, name) {
 			return nil, fmt.Errorf("invalid output %q (allowed: %s)", value, JoinNames(orderedNames))
 		}
 		if _, ok := seen[name]; ok {

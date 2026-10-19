@@ -8,7 +8,7 @@ import (
 	"github.com/DataDog/datadog-go/v5/statsd"
 )
 
-type DatadogStatsDPublisher struct {
+type datadogPublisher struct {
 	sender *statsdSender
 }
 
@@ -71,35 +71,15 @@ type statsdGauge struct {
 	tags  []string
 }
 
-func init() {
-	Register(string(OutputStatsdDatadog), ExtensionHook{
-		SetupFlags: func(ctx RuntimeContext, registerFlag func(func())) {
-			addr := new(string)
-			ctx.Set(string(OutputStatsdDatadog), addr)
-			registerFlag(func() {
-				BindStringFlag(string(OutputStatsdDatadog), DefaultStatsDAddr, "UDP network address location pointing to local Datadog daemon", addr)
-			})
-		},
-		Factory: func(ctx RuntimeContext) (Publisher, error) {
-			if !ctx.OutputSelected(OutputStatsdDatadog) {
-				return nil, nil
-			}
-
-			addr := ctx.GetString(string(OutputStatsdDatadog))
-			if addr == "" {
-				return nil, fmt.Errorf("--%s is required when -o %s is set", OutputStatsdDatadog, OutputStatsdDatadog)
-			}
-
-			sender, err := newStatsdSender(addr, statsd.WithNamespace("custom_monitoring."))
-			if err != nil {
-				return nil, err
-			}
-			return &DatadogStatsDPublisher{sender: sender}, nil
-		},
-	})
+func newDatadogPublisher(cfg Config) (publisher, error) {
+	sender, err := newStatsdSender(cfg.Datadog.Value, statsd.WithNamespace("custom_monitoring."))
+	if err != nil {
+		return nil, err
+	}
+	return &datadogPublisher{sender: sender}, nil
 }
 
-func (p *DatadogStatsDPublisher) Publish(res Result) error {
+func (p *datadogPublisher) Publish(res Result) error {
 	// Datadog natively treats metadata as a flat array of key:value string tags
 	tagsList := []string{"url:" + res.URL}
 	for k, v := range res.Tags {
@@ -121,4 +101,4 @@ func (p *DatadogStatsDPublisher) Publish(res Result) error {
 	return p.sender.gauges(gauges...)
 }
 
-func (p *DatadogStatsDPublisher) Close() error { return p.sender.close() }
+func (p *datadogPublisher) Close() error { return p.sender.close() }

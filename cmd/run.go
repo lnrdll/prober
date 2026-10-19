@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/lnrdll/prober/internal/config"
@@ -14,15 +15,16 @@ var (
 	runConfigPath       string
 	failOnTargetFailure bool
 	runOutputs          []string
-	globalRunCtx        = output.NewRuntimeContext()
+	runFilePath         string
+	runJUnitPath        string
+	runDatadogAddr      string
+	runGCPAddr          string
 )
 
 var runCmd = &cobra.Command{
 	Use:   "run",
 	Short: "Run probes from a target manifest.",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		globalRunCtx.Set(output.StdoutWriterKey, cmd.OutOrStdout())
-
 		cfg, err := loadConfig(runConfigPath)
 		if err != nil {
 			return err
@@ -31,84 +33,35 @@ var runCmd = &cobra.Command{
 			return fmt.Errorf("validate config: %w", err)
 		}
 
-		selectedOutputs, err := output.ParseSelections(runOutputs)
-		if err != nil {
-			return err
-		}
-
-		for _, name := range output.Names() {
-			hook, ok := output.Get(name)
-			if !ok || hook.SetupFlags == nil {
-				continue
-			}
-
-			flagChanged := cmd.Flags().Changed(string(name))
-			configuredValue := globalRunCtx.GetString(string(name))
-			if globalRunCtx.OutputSelected(name) && configuredValue == "" {
-				return fmt.Errorf("--%s is required when -o %s is set", name, name)
-			}
-			if !globalRunCtx.OutputSelected(name) && flagChanged {
-				return fmt.Errorf("--%s requires -o %s", name, name)
-			}
-		}
-
 		compiledTargets, err := prober.CompileTargetAssertions(cfg.Targets)
 		if err != nil {
 			return fmt.Errorf("compile probe assertions: %w", err)
 		}
 
-		var activePublishers []output.Publisher
-		for _, name := range selectedOutputs {
-			hook, ok := output.Get(name)
-			if !ok {
-				return fmt.Errorf("initialize output %q: not registered", name)
-			}
-			pub, err := hook.Factory(globalRunCtx)
-			if err != nil {
-				return fmt.Errorf("initialize output %q: %w", name, err)
-			}
-			if pub != nil {
-				activePublishers = append(activePublishers, pub)
-			}
+		setting := func(name output.Name, value string) output.Setting {
+			return output.Setting{Value: value, Set: cmd.Flags().Changed(string(name))}
 		}
-
-		if len(selectedOutputs) == 0 {
-			stdoutHook, ok := output.Get(output.OutputStdout)
-			if !ok {
-				return fmt.Errorf("initialize default output %q: not registered", output.OutputStdout)
-			}
-			stdoutFallback, err := stdoutHook.Factory(globalRunCtx)
-			if err != nil {
-				return fmt.Errorf("initialize default output %q: %w", output.OutputStdout, err)
-			}
-			if stdoutFallback != nil {
-				activePublishers = append(activePublishers, stdoutFallback)
-			}
-		}
-
-		summary := prober.Execute(compiledTargets, func(res output.Result) {
-			for _, pub := range activePublishers {
-				_ = pub.Publish(res)
-			}
+		outputs, err := output.Open(output.Config{
+			Selections: runOutputs,
+			Writer:     cmd.OutOrStdout(),
+			File:       setting(output.OutputFile, runFilePath),
+			JUnit:      setting(output.OutputJunit, runJUnitPath),
+			Datadog:    setting(output.OutputStatsdDatadog, runDatadogAddr),
+			GCP:        setting(output.OutputStatsdGCP, runGCPAddr),
 		})
-
-		for _, pub := range activePublishers {
-			if summaryPublisher, ok := pub.(output.SummaryPublisher); ok {
-				_ = summaryPublisher.PublishSummary(summary)
-			}
+		if err != nil {
+			return err
 		}
 
-		for _, pub := range activePublishers {
-			if err := pub.Close(); err != nil {
-				return fmt.Errorf("close output publisher: %w", err)
-			}
-		}
+		summary := prober.Execute(compiledTargets, outputs.Publish)
+		outputErr := outputs.Finish(summary)
 
+		var targetErr error
 		if failOnTargetFailure && summary.Failed > 0 {
-			return fmt.Errorf("%d target(s) failed", summary.Failed)
+			targetErr = fmt.Errorf("%d target(s) failed", summary.Failed)
 		}
 
-		return nil
+		return errors.Join(outputErr, targetErr)
 	},
 }
 
@@ -116,18 +69,8 @@ func init() {
 	addConfigFlag(runCmd, &runConfigPath)
 	runCmd.Flags().BoolVar(&failOnTargetFailure, "fail-on-target-failure", false, "Exit non-zero when any target fails")
 	runCmd.Flags().StringArrayVarP(&runOutputs, "output", "o", nil, "Enable an output backend (repeatable): "+output.JoinNames(output.Names()))
-	globalRunCtx.Set(string(output.SelectionKey), &runOutputs)
-
-	output.LinkFlagBinders(
-		func(name, value, usage string, target *string) { runCmd.Flags().StringVar(target, name, value, usage) },
-		func(name string, value bool, usage string, target *bool) {
-			runCmd.Flags().BoolVar(target, name, value, usage)
-		},
-	)
-
-	for _, hook := range output.Registry {
-		if hook.SetupFlags != nil {
-			hook.SetupFlags(globalRunCtx, func(bindFunc func()) { bindFunc() })
-		}
-	}
+	runCmd.Flags().StringVar(&runFilePath, string(output.OutputFile), output.DefaultFilePath, "Append structured JSON log lines to a file")
+	runCmd.Flags().StringVar(&runJUnitPath, string(output.OutputJunit), output.DefaultJUnitPath, "Write a JUnit XML report to a file")
+	runCmd.Flags().StringVar(&runDatadogAddr, string(output.OutputStatsdDatadog), output.DefaultStatsDAddr, "UDP network address location pointing to local Datadog daemon")
+	runCmd.Flags().StringVar(&runGCPAddr, string(output.OutputStatsdGCP), output.DefaultStatsDAddr, "UDP network address location pointing to local GCP Ops Agent")
 }
