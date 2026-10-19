@@ -25,10 +25,12 @@ func TestVersionCmd(t *testing.T) {
 		buildinfo.Date = "unknown"
 
 		buf := &bytes.Buffer{}
-		versionCmd.SetOut(buf)
-		versionCmd.SetErr(buf)
+		root := NewRootCmd()
+		root.SetArgs([]string{"version"})
+		root.SetOut(buf)
+		root.SetErr(buf)
 
-		versionCmd.Run(versionCmd, nil)
+		require.NoError(t, root.Execute())
 
 		assert.Equal(t, "prober dev\n", buf.String())
 	})
@@ -39,10 +41,12 @@ func TestVersionCmd(t *testing.T) {
 		buildinfo.Date = "2026-05-19 10:11:12 UTC"
 
 		buf := &bytes.Buffer{}
-		versionCmd.SetOut(buf)
-		versionCmd.SetErr(buf)
+		root := NewRootCmd()
+		root.SetArgs([]string{"version"})
+		root.SetOut(buf)
+		root.SetErr(buf)
 
-		versionCmd.Run(versionCmd, nil)
+		require.NoError(t, root.Execute())
 
 		require.NotEmpty(t, buf.String())
 		assert.Equal(t, "prober v1.2.3 (abc1234 2026-05-19 10:11:12 UTC)\n", buf.String())

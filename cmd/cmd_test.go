@@ -15,174 +15,120 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestRunCmdRunE(t *testing.T) {
-	oldPath := runConfigPath
-	oldFail := failOnTargetFailure
-	oldOutputs := append([]string(nil), runOutputs...)
-	oldOut := runCmd.OutOrStdout()
-	oldFilePath, oldJUnitPath, oldDatadogAddr, oldGCPAddr := runFilePath, runJUnitPath, runDatadogAddr, runGCPAddr
-	defer func() {
-		runConfigPath = oldPath
-		failOnTargetFailure = oldFail
-		runOutputs = oldOutputs
-		runFilePath, runJUnitPath, runDatadogAddr, runGCPAddr = oldFilePath, oldJUnitPath, oldDatadogAddr, oldGCPAddr
-		runCmd.SetOut(oldOut)
-		resetOutputFlagState(t)
-	}()
+// executeRoot runs a fresh root command with args and returns what it wrote to
+// stdout and the error it returned.
+func executeRoot(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	root := NewRootCmd()
+	out := &bytes.Buffer{}
+	root.SetArgs(args)
+	root.SetOut(out)
+	root.SetErr(io.Discard)
+	err := root.Execute()
+	return out.String(), err
+}
+
+// newTargetServer starts a local server that answers every request with 200.
+func newTargetServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// manifestTarget is one target in a test manifest. An empty assertion leaves
+// the target on the default assertion.
+type manifestTarget struct {
+	name      string
+	assertion string
+}
+
+// writeManifest writes a manifest whose targets all probe url, and returns its
+// path.
+func writeManifest(t *testing.T, url string, targets ...manifestTarget) string {
+	t.Helper()
+	manifest := "targets:\n"
+	for _, target := range targets {
+		manifest += "  - name: " + target.name + "\n    url: " + url + "\n"
+		if target.assertion != "" {
+			manifest += "    assertions:\n      - " + target.assertion + "\n"
+		}
+	}
+	path := filepath.Join(t.TempDir(), "targets.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(manifest), 0644))
+	return path
+}
+
+func TestRunCmd(t *testing.T) {
+	server := newTargetServer(t)
+	failing := manifestTarget{name: "failing", assertion: "status == 500"}
+	passing := manifestTarget{name: "passing", assertion: "status == 200"}
 
 	t.Run("prints summary and succeeds when failures are allowed", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "targets.yaml")
+		path := writeManifest(t, server.URL, failing)
 		filePath := filepath.Join(t.TempDir(), "prober.log")
-		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: failing\n    url: https://example.com\n    assertions:\n      - status == 500\n"), 0644))
-		runConfigPath = path
-		failOnTargetFailure = false
-		resetOutputFlagState(t)
-		runOutputs = []string{string(output.OutputSummary), string(output.OutputFile)}
-		runFilePath = filePath
-		runJUnitPath = output.DefaultJUnitPath
-		runDatadogAddr = output.DefaultStatsDAddr
-		runGCPAddr = output.DefaultStatsDAddr
 
-		buf := &bytes.Buffer{}
-		runCmd.SetOut(buf)
-
-		err := runCmd.RunE(runCmd, nil)
+		out, err := executeRoot(t, "run", "-c", path, "-o", "summary", "-o", "file", "--file", filePath)
 		require.NoError(t, err)
-		assert.Contains(t, buf.String(), "Summary: total=1")
-		assert.Contains(t, buf.String(), "FAILED https://example.com")
+		assert.Contains(t, out, "Summary: total=1")
+		assert.Contains(t, out, "FAILED "+server.URL)
 	})
 
 	t.Run("summary output suppresses default stdout output", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "targets.yaml")
-		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: failing\n    url: https://example.com\n    assertions:\n      - status == 500\n"), 0644))
-		runConfigPath = path
-		failOnTargetFailure = false
-		resetOutputFlagState(t)
-		runOutputs = []string{string(output.OutputSummary)}
-		runFilePath = output.DefaultFilePath
-		runJUnitPath = output.DefaultJUnitPath
-		runDatadogAddr = output.DefaultStatsDAddr
-		runGCPAddr = output.DefaultStatsDAddr
+		path := writeManifest(t, server.URL, failing)
 
-		buf := &bytes.Buffer{}
-		runCmd.SetOut(buf)
-
-		stdout := os.Stdout
-		r, w, err := os.Pipe()
+		out, err := executeRoot(t, "run", "-c", path, "-o", "summary")
 		require.NoError(t, err)
-		os.Stdout = w
+		assert.Contains(t, out, "Summary: total=1")
+		assert.Contains(t, out, "FAILED "+server.URL)
+		assert.NotContains(t, out, "{")
+	})
 
-		err = runCmd.RunE(runCmd, nil)
+	t.Run("writes stdout json by default", func(t *testing.T) {
+		path := writeManifest(t, server.URL, passing)
+
+		out, err := executeRoot(t, "run", "-c", path)
 		require.NoError(t, err)
-		require.NoError(t, w.Close())
-		os.Stdout = stdout
-
-		stdoutData, readErr := io.ReadAll(r)
-		require.NoError(t, readErr)
-		assert.Empty(t, string(stdoutData))
-		assert.Contains(t, buf.String(), "Summary: total=1")
-		assert.Contains(t, buf.String(), "FAILED https://example.com")
+		assert.Contains(t, out, `"msg":"Uptime check passed"`)
+		assert.NotContains(t, out, "Summary:")
 	})
 
 	t.Run("returns error when failures are enforced", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "targets.yaml")
+		path := writeManifest(t, server.URL, failing)
 		filePath := filepath.Join(t.TempDir(), "prober.log")
-		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: failing\n    url: https://example.com\n    assertions:\n      - status == 500\n"), 0644))
-		runConfigPath = path
-		failOnTargetFailure = true
-		resetOutputFlagState(t)
-		runOutputs = []string{string(output.OutputSummary), string(output.OutputFile)}
-		runFilePath = filePath
-		runJUnitPath = output.DefaultJUnitPath
-		runDatadogAddr = output.DefaultStatsDAddr
-		runGCPAddr = output.DefaultStatsDAddr
 
-		buf := &bytes.Buffer{}
-		runCmd.SetOut(buf)
-
-		err := runCmd.RunE(runCmd, nil)
+		out, err := executeRoot(t, "run", "-c", path, "--fail-on-target-failure", "-o", "summary", "-o", "file", "--file", filePath)
 		assert.ErrorContains(t, err, "1 target(s) failed")
-		assert.Contains(t, buf.String(), "Summary: total=1")
+		assert.Contains(t, out, "Summary: total=1")
 	})
 
 	t.Run("validates config before compilation", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "invalid.yaml")
-		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: test\n    url: https://example.com\n    method: get\n"), 0644))
-		runConfigPath = path
-		failOnTargetFailure = true
-		resetOutputFlagState(t)
-		runOutputs = []string{string(output.OutputFile)}
-		runFilePath = filepath.Join(t.TempDir(), "prober.log")
-		runJUnitPath = output.DefaultJUnitPath
-		runDatadogAddr = output.DefaultStatsDAddr
-		runGCPAddr = output.DefaultStatsDAddr
+		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: test\n    url: "+server.URL+"\n    method: get\n"), 0644))
 
-		err := runCmd.RunE(runCmd, nil)
+		_, err := executeRoot(t, "run", "-c", path, "--fail-on-target-failure", "-o", "file", "--file", filepath.Join(t.TempDir(), "prober.log"))
 		assert.ErrorContains(t, err, "validate config")
 		assert.ErrorContains(t, err, "method must be uppercase")
 	})
 
 	t.Run("does not print summary when summary output is not selected", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "targets.yaml")
+		path := writeManifest(t, server.URL, passing)
 		filePath := filepath.Join(t.TempDir(), "prober.log")
-		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: passing\n    url: https://example.com\n    assertions:\n      - status == 200\n"), 0644))
-		runConfigPath = path
-		failOnTargetFailure = true
-		resetOutputFlagState(t)
-		runOutputs = []string{string(output.OutputFile)}
-		runFilePath = filePath
-		runJUnitPath = output.DefaultJUnitPath
-		runDatadogAddr = output.DefaultStatsDAddr
-		runGCPAddr = output.DefaultStatsDAddr
 
-		buf := &bytes.Buffer{}
-		runCmd.SetOut(buf)
-
-		err := runCmd.RunE(runCmd, nil)
+		out, err := executeRoot(t, "run", "-c", path, "--fail-on-target-failure", "-o", "file", "--file", filePath)
 		require.NoError(t, err)
-		assert.Empty(t, buf.String())
-	})
-
-	t.Run("prints summary when selected as an output", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "targets.yaml")
-		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: failing\n    url: https://example.com\n    assertions:\n      - status == 500\n"), 0644))
-		runConfigPath = path
-		failOnTargetFailure = false
-		resetOutputFlagState(t)
-		runOutputs = []string{string(output.OutputSummary)}
-		runFilePath = output.DefaultFilePath
-		runJUnitPath = output.DefaultJUnitPath
-		runDatadogAddr = output.DefaultStatsDAddr
-		runGCPAddr = output.DefaultStatsDAddr
-
-		buf := &bytes.Buffer{}
-		runCmd.SetOut(buf)
-
-		err := runCmd.RunE(runCmd, nil)
-		require.NoError(t, err)
-		assert.Contains(t, buf.String(), "Summary: total=1")
-		assert.Contains(t, buf.String(), "FAILED https://example.com")
+		assert.Empty(t, out)
 	})
 
 	t.Run("writes junit report when selected", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "targets.yaml")
+		path := writeManifest(t, server.URL, manifestTarget{"homepage", "status == 200"}, manifestTarget{"api", "status == 500"})
 		reportPath := filepath.Join(t.TempDir(), "report.xml")
-		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: homepage\n    url: https://example.com\n    assertions:\n      - status == 200\n  - name: api\n    url: https://example.com\n    assertions:\n      - status == 500\n"), 0644))
-		runConfigPath = path
-		failOnTargetFailure = false
-		resetOutputFlagState(t)
-		runOutputs = []string{string(output.OutputJunit)}
-		runFilePath = output.DefaultFilePath
-		runJUnitPath = reportPath
-		runDatadogAddr = output.DefaultStatsDAddr
-		runGCPAddr = output.DefaultStatsDAddr
 
-		buf := &bytes.Buffer{}
-		runCmd.SetOut(buf)
-
-		err := runCmd.RunE(runCmd, nil)
+		out, err := executeRoot(t, "run", "-c", path, "-o", "junit", "--junit", reportPath)
 		require.NoError(t, err)
-		assert.Empty(t, buf.String())
+		assert.Empty(t, out)
 
 		data, readErr := os.ReadFile(reportPath)
 		require.NoError(t, readErr)
@@ -193,80 +139,65 @@ func TestRunCmdRunE(t *testing.T) {
 	})
 
 	t.Run("errors on unknown output", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "targets.yaml")
-		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: passing\n    url: https://example.com\n"), 0644))
-		runConfigPath = path
-		failOnTargetFailure = false
-		resetOutputFlagState(t)
-		runOutputs = []string{"unknown"}
-		runFilePath = output.DefaultFilePath
-		runJUnitPath = output.DefaultJUnitPath
-		runDatadogAddr = output.DefaultStatsDAddr
-		runGCPAddr = output.DefaultStatsDAddr
+		path := writeManifest(t, server.URL, manifestTarget{name: "passing"})
 
-		err := runCmd.RunE(runCmd, nil)
+		_, err := executeRoot(t, "run", "-c", path, "-o", "unknown")
 		assert.ErrorContains(t, err, "invalid output")
 		assert.ErrorContains(t, err, string(output.OutputStdout))
 	})
 
 	t.Run("uses default file config when output is selected", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "targets.yaml")
-		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: passing\n    url: https://example.com\n"), 0644))
-		runConfigPath = path
-		failOnTargetFailure = false
-		resetOutputFlagState(t)
-		runOutputs = []string{string(output.OutputFile)}
-		runFilePath = output.DefaultFilePath
-		runJUnitPath = output.DefaultJUnitPath
-		runDatadogAddr = output.DefaultStatsDAddr
-		runGCPAddr = output.DefaultStatsDAddr
-		defer func() { _ = os.Remove(output.DefaultFilePath) }()
+		path := writeManifest(t, server.URL, manifestTarget{name: "passing"})
+		t.Chdir(t.TempDir())
 
-		err := runCmd.RunE(runCmd, nil)
+		_, err := executeRoot(t, "run", "-c", path, "-o", "file")
 		require.NoError(t, err)
-	})
-
-	t.Run("requires output selection when config is provided", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "targets.yaml")
-		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: passing\n    url: https://example.com\n"), 0644))
-		runConfigPath = path
-		failOnTargetFailure = false
-		resetOutputFlagState(t)
-		runOutputs = nil
-		runFilePath = filepath.Join(t.TempDir(), "prober.log")
-		runJUnitPath = output.DefaultJUnitPath
-		runDatadogAddr = output.DefaultStatsDAddr
-		runGCPAddr = output.DefaultStatsDAddr
-		require.NoError(t, runCmd.Flags().Set(string(output.OutputFile), runFilePath))
-
-		err := runCmd.RunE(runCmd, nil)
-		assert.ErrorContains(t, err, "--file requires -o file")
-	})
-
-	t.Run("uses default junit config when output is selected", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "targets.yaml")
-		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: passing\n    url: https://example.com\n"), 0644))
-		runConfigPath = path
-		failOnTargetFailure = false
-		resetOutputFlagState(t)
-		runOutputs = []string{string(output.OutputJunit)}
-		runFilePath = output.DefaultFilePath
-		runJUnitPath = filepath.Join(t.TempDir(), output.DefaultJUnitPath)
-		runDatadogAddr = output.DefaultStatsDAddr
-		runGCPAddr = output.DefaultStatsDAddr
-
-		err := runCmd.RunE(runCmd, nil)
-		require.NoError(t, err)
-		_, statErr := os.Stat(runJUnitPath)
+		_, statErr := os.Stat(output.DefaultFilePath)
 		require.NoError(t, statErr)
 	})
 
+	t.Run("uses default junit config when output is selected", func(t *testing.T) {
+		path := writeManifest(t, server.URL, manifestTarget{name: "passing"})
+		t.Chdir(t.TempDir())
+
+		_, err := executeRoot(t, "run", "-c", path, "-o", "junit")
+		require.NoError(t, err)
+		_, statErr := os.Stat(output.DefaultJUnitPath)
+		require.NoError(t, statErr)
+	})
+
+	t.Run("requires output selection when an output setting is provided", func(t *testing.T) {
+		path := writeManifest(t, server.URL, manifestTarget{name: "passing"})
+
+		_, err := executeRoot(t, "run", "-c", path, "--file", filepath.Join(t.TempDir(), "prober.log"))
+		assert.ErrorContains(t, err, "--file requires -o file")
+	})
+
 	t.Run("flag defaults are exposed in help metadata", func(t *testing.T) {
-		resetOutputFlagState(t)
+		runCmd, _, err := NewRootCmd().Find([]string{"run"})
+		require.NoError(t, err)
 		assert.Equal(t, output.DefaultFilePath, runCmd.Flags().Lookup(string(output.OutputFile)).DefValue)
 		assert.Equal(t, output.DefaultJUnitPath, runCmd.Flags().Lookup(string(output.OutputJunit)).DefValue)
 		assert.Equal(t, output.DefaultStatsDAddr, runCmd.Flags().Lookup(string(output.OutputStatsdDatadog)).DefValue)
 		assert.Equal(t, output.DefaultStatsDAddr, runCmd.Flags().Lookup(string(output.OutputStatsdGCP)).DefValue)
+		assert.Equal(t, "false", runCmd.Flags().Lookup("fail-on-target-failure").DefValue)
+	})
+
+	t.Run("repeated invocations share no configuration", func(t *testing.T) {
+		path := writeManifest(t, server.URL, failing)
+		reportPath := filepath.Join(t.TempDir(), "report.xml")
+		filePath := filepath.Join(t.TempDir(), "prober.log")
+
+		out, err := executeRoot(t, "run", "-c", path, "--fail-on-target-failure", "-o", "summary", "-o", "junit", "--junit", reportPath)
+		assert.ErrorContains(t, err, "1 target(s) failed")
+		assert.Contains(t, out, "Summary: total=1")
+		require.NoError(t, os.Remove(reportPath))
+
+		out, err = executeRoot(t, "run", "-c", path, "-o", "file", "--file", filePath)
+		require.NoError(t, err)
+		assert.Empty(t, out)
+		assert.NoFileExists(t, reportPath)
+		assert.FileExists(t, filePath)
 	})
 }
 
@@ -289,43 +220,16 @@ func TestRunCmdReportsOutputFailureBeforeTargetFailures(t *testing.T) {
 // and error.
 func runWithUnwritableJUnit(t *testing.T, failOnTargets bool) (string, error) {
 	t.Helper()
-	oldPath, oldFail, oldOutputs, oldJUnitPath := runConfigPath, failOnTargetFailure, runOutputs, runJUnitPath
-	oldOut := runCmd.OutOrStdout()
-	defer func() {
-		runConfigPath, failOnTargetFailure, runOutputs, runJUnitPath = oldPath, oldFail, oldOutputs, oldJUnitPath
-		runCmd.SetOut(oldOut)
-		resetOutputFlagState(t)
-	}()
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer server.Close()
-
-	path := filepath.Join(t.TempDir(), "targets.yaml")
-	require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: failing\n    url: "+server.URL+"\n    assertions:\n      - status == 200\n"), 0644))
+	server := newTargetServer(t)
+	path := writeManifest(t, server.URL, manifestTarget{name: "failing", assertion: "status == 500"})
 	regularFile := filepath.Join(t.TempDir(), "regular-file")
 	require.NoError(t, os.WriteFile(regularFile, []byte("x"), 0644))
 
-	runConfigPath = path
-	failOnTargetFailure = failOnTargets
-	runOutputs = []string{string(output.OutputSummary), string(output.OutputJunit)}
-	resetOutputFlagState(t)
-	require.NoError(t, runCmd.Flags().Set(string(output.OutputJunit), filepath.Join(regularFile, "report.xml")))
-	buf := &bytes.Buffer{}
-	runCmd.SetOut(buf)
-
-	err := runCmd.RunE(runCmd, nil)
-	return buf.String(), err
-}
-
-func resetOutputFlagState(t *testing.T) {
-	t.Helper()
-	for _, flagName := range []string{string(output.OutputFile), string(output.OutputJunit), string(output.OutputStatsdDatadog), string(output.OutputStatsdGCP)} {
-		flag := runCmd.Flags().Lookup(flagName)
-		require.NotNil(t, flag)
-		flag.Changed = false
+	args := []string{"run", "-c", path, "-o", "summary", "-o", "junit", "--junit", filepath.Join(regularFile, "report.xml")}
+	if failOnTargets {
+		args = append(args, "--fail-on-target-failure")
 	}
+	return executeRoot(t, args...)
 }
 
 func TestLoadConfig(t *testing.T) {
@@ -373,42 +277,37 @@ func TestAddConfigFlag(t *testing.T) {
 	assert.Equal(t, "targets.yaml", configPath)
 }
 
-func TestLintCmdRunE(t *testing.T) {
-	oldPath := lintConfigPath
-	defer func() { lintConfigPath = oldPath }()
-
+func TestLintCmd(t *testing.T) {
 	t.Run("valid config", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "valid.yaml")
 		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: test\n    url: http://example.com\n    assertions:\n      - status == 200\n"), 0644))
-		lintConfigPath = path
 
 		stdout := os.Stdout
 		r, w, err := os.Pipe()
 		require.NoError(t, err)
 		os.Stdout = w
+		t.Cleanup(func() { os.Stdout = stdout })
 
-		err = lintCmd.RunE(lintCmd, nil)
+		_, err = executeRoot(t, "lint", "-c", path)
 		require.NoError(t, err)
 		require.NoError(t, w.Close())
 		os.Stdout = stdout
 
-		out, err := bytes.NewBuffer(nil).ReadFrom(r)
-		_ = out
-		assert.NoError(t, err)
+		out, err := io.ReadAll(r)
+		require.NoError(t, err)
+		assert.Equal(t, "Configuration schema and CEL expressions are valid.\n", string(out))
 	})
 
 	t.Run("invalid config path", func(t *testing.T) {
-		lintConfigPath = filepath.Join(t.TempDir(), "missing.yaml")
-		err := lintCmd.RunE(lintCmd, nil)
+		_, err := executeRoot(t, "lint", "-c", filepath.Join(t.TempDir(), "missing.yaml"))
 		assert.ErrorContains(t, err, "read config")
 	})
 
 	t.Run("invalid assertions", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "invalid-cel.yaml")
 		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: test\n    url: http://example.com\n    assertions:\n      - status === 200\n"), 0644))
-		lintConfigPath = path
 
-		err := lintCmd.RunE(lintCmd, nil)
+		_, err := executeRoot(t, "lint", "-c", path)
 		assert.ErrorContains(t, err, "validate assertions")
 	})
 }

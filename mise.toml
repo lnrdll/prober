@@ -7,6 +7,7 @@ enter = "mise install"
 [tools]
 golang = "1.27"
 golangci-lint = "latest"
+"go:golang.org/x/vuln/cmd/govulncheck" = "latest"
 
 [vars]
 name = "github.com/lnrdll/prober"
@@ -56,12 +57,22 @@ description = "(t) Run unit tests"
 alias = "t"
 run = "go test -v -cover ./..."
 
-[tasks.check]
-description = "(ck) Run lint + tests"
-alias = "ck"
+[tasks.vuln]
+description = "(v) Run go vuln"
+alias = "v"
+run = "govulncheck ./..."
+
+[tasks.vet]
+description = "Run go vet"
+run = "go vet ./..."
+
+[tasks.quality]
+description = "CI-equivalent quality gates"
 run = [
+  { task = "test" },
+  { task = "vet" },
   { task = "lint" },
-  { task = "test" }
+  { task = "vuln" }
 ]
 
 [tasks.build]

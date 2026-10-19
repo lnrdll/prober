@@ -7,27 +7,30 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var lintConfigPath string
-
-var lintCmd = &cobra.Command{
-	Use:   "lint",
-	Short: "Validate manifest structure and CEL assertions.",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := loadConfig(lintConfigPath)
-		if err != nil {
-			return err
-		}
-
-		if _, err := prober.CompileTargetAssertions(cfg.Targets); err != nil {
-			return fmt.Errorf("validate assertions: %w", err)
-		}
-
-		fmt.Println("Configuration schema and CEL expressions are valid.")
-		return nil
-	},
+type lintOptions struct {
+	configPath string
 }
 
-func init() {
-	addConfigFlag(lintCmd, &lintConfigPath)
-	RootCmd.AddCommand(lintCmd)
+func newLintCmd() *cobra.Command {
+	opts := &lintOptions{}
+	lintCmd := &cobra.Command{
+		Use:   "lint",
+		Short: "Validate manifest structure and CEL assertions.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadConfig(opts.configPath)
+			if err != nil {
+				return err
+			}
+
+			if _, err := prober.CompileTargetAssertions(cfg.Targets); err != nil {
+				return fmt.Errorf("validate assertions: %w", err)
+			}
+
+			fmt.Println("Configuration schema and CEL expressions are valid.")
+			return nil
+		},
+	}
+
+	addConfigFlag(lintCmd, &opts.configPath)
+	return lintCmd
 }
