@@ -146,6 +146,27 @@ func TestProbeTarget(t *testing.T) {
 		}
 	})
 
+	t.Run("blocks SSRF metadata hosts without sending or retrying", func(t *testing.T) {
+		ssrfHosts := []string{"http://169.254.169.254/latest/meta-data/", "http://METADATA.google.internal/computeMetadata/v1/"}
+		for _, host := range ssrfHosts {
+			t.Run(fmt.Sprintf("blocks %s", host), func(t *testing.T) {
+				requests := 0
+				countingClient := &http.Client{
+					Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+						requests++
+						return nil, fmt.Errorf("unexpected request to %s", r.URL)
+					}),
+				}
+
+				target := config.Target{URL: host, Retries: 2}
+				result := probeTarget(target, countingClient)
+				assert.Equal(t, "SSRF Alert: Request to Cloud Metadata Server explicitly blocked", result.Error)
+				assert.False(t, result.Up)
+				assert.Equal(t, 0, requests)
+			})
+		}
+	})
+
 	t.Run("captures status/body/headers/latency basics", func(t *testing.T) {
 		expectedBody := "Hello, Prober!"
 		expectedHeaderKey := "X-Response-Header"
@@ -369,4 +390,10 @@ func TestExecuteSummary(t *testing.T) {
 	assert.Len(t, summary.Results, 2)
 	assert.ElementsMatch(t, []string{"pass", "fail"}, published)
 	assert.GreaterOrEqual(t, summary.Duration, time.Duration(0))
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
 }

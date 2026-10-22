@@ -7,6 +7,7 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -130,6 +131,16 @@ func probeTargetOnce(t config.Target, client *http.Client) output.Result {
 	}
 	if res.Method == "" {
 		res.Method = http.MethodGet
+	}
+
+	// Security Guardrail: Block Server-Side Request Forgery (SSRF) against Cloud Metadata Endpoints
+	parsedURL, err := url.Parse(t.URL)
+	if err == nil {
+		hostStr := strings.ToLower(parsedURL.Hostname())
+		if hostStr == "169.254.169.254" || hostStr == "metadata.google.internal" {
+			res.Error = "SSRF Alert: Request to Cloud Metadata Server explicitly blocked"
+			return res
+		}
 	}
 
 	req, err := http.NewRequest(res.Method, t.URL, bytes.NewBufferString(t.Body))
