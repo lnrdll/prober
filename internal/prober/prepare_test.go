@@ -112,4 +112,40 @@ func TestPrepare(t *testing.T) {
 		require.Error(t, err)
 		assert.Regexp(t, `^compile assertions: target "test" failed compiling assertion "status === 200": .*Syntax error`, err.Error())
 	})
+
+	t.Run("rejects assertions that do not return a boolean", func(t *testing.T) {
+		_, err := Prepare(config.Config{Targets: []config.Target{
+			{Name: "test", URL: "http://example.com", Assertions: []string{"status == 200", "status + 1"}},
+		}})
+		assert.EqualError(t, err, `compile assertions: target "test" assertion "status + 1" must return a boolean`)
+	})
+
+	t.Run("accepts boolean and dynamic assertions", func(t *testing.T) {
+		server := newStatusServer(t, http.StatusOK)
+
+		summary := prepareAndExecute(t, config.Config{Targets: []config.Target{
+			{Name: "test", URL: server.URL, Assertions: []string{"status == 200", "dyn(status == 200)"}},
+		}})
+
+		assert.Equal(t, 1, summary.Passed)
+	})
+
+	t.Run("leaves dynamic assertions that yield a non-boolean to execution", func(t *testing.T) {
+		server := newStatusServer(t, http.StatusOK)
+
+		summary := prepareAndExecute(t, config.Config{Targets: []config.Target{
+			{Name: "test", URL: server.URL, Assertions: []string{"dyn(status + 1)"}},
+		}})
+
+		require.Len(t, summary.Results, 1)
+		assert.False(t, summary.Results[0].Up)
+		assert.Equal(t, 1, summary.Failed)
+	})
+
+	t.Run("does not reject non-boolean assertions on disabled targets", func(t *testing.T) {
+		_, err := Prepare(config.Config{Targets: []config.Target{
+			{Name: "disabled", URL: "http://example.com", Disabled: true, Assertions: []string{"status + 1"}},
+		}})
+		assert.NoError(t, err)
+	})
 }

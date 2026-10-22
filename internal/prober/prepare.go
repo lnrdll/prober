@@ -42,6 +42,10 @@ func Prepare(cfg config.Config) ([]config.Target, error) {
 			if iss.Err() != nil {
 				return nil, fmt.Errorf("compile assertions: target %q failed compiling assertion %q: %v", target.Name, expr, iss.Err())
 			}
+			// A dynamic output passes here; worker checks its value at run time.
+			if out := ast.OutputType(); !out.IsExactType(cel.BoolType) && !out.IsExactType(cel.DynType) {
+				return nil, fmt.Errorf("compile assertions: target %q assertion %q must return a boolean", target.Name, expr)
+			}
 
 			prog, err := env.Program(ast)
 			if err != nil {

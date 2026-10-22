@@ -304,6 +304,11 @@ func TestRunAndLintRejectSameManifests(t *testing.T) {
 			manifest: "targets:\n  - name: test\n    url: " + server.URL + "\n    assertions:\n      - status === 200\n",
 			expected: `^compile assertions: target "test" failed compiling assertion "status === 200": .*Syntax error`,
 		},
+		{
+			name:     "non-boolean assertion",
+			manifest: "targets:\n  - name: test\n    url: " + server.URL + "\n    assertions:\n      - status + 1\n",
+			expected: `^compile assertions: target "test" assertion "status \+ 1" must return a boolean$`,
+		},
 	}
 
 	for _, tt := range tests {

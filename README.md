@@ -146,6 +146,8 @@ Assertions use CEL and are evaluated against these fields:
 - `ssl_dns_names`
 - `headers`
 
+Each assertion must return a boolean. `prober lint` and `prober run` reject one that doesn't, such as `status + 1`.
+
 If no assertions are provided, the default is:
 
 ```cel
