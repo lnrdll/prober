@@ -104,15 +104,6 @@ func TestRunCmd(t *testing.T) {
 		assert.Contains(t, out, "Summary: total=1")
 	})
 
-	t.Run("validates config before compilation", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "invalid.yaml")
-		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: test\n    url: "+server.URL+"\n    method: get\n"), 0644))
-
-		_, err := executeRoot(t, "run", "-c", path, "--fail-on-target-failure", "-o", "file", "--file", filepath.Join(t.TempDir(), "prober.log"))
-		assert.ErrorContains(t, err, "validate config")
-		assert.ErrorContains(t, err, "method must be uppercase")
-	})
-
 	t.Run("does not print summary when summary output is not selected", func(t *testing.T) {
 		path := writeManifest(t, server.URL, passing)
 		filePath := filepath.Join(t.TempDir(), "prober.log")
@@ -282,32 +273,53 @@ func TestLintCmd(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "valid.yaml")
 		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: test\n    url: http://example.com\n    assertions:\n      - status == 200\n"), 0644))
 
-		stdout := os.Stdout
-		r, w, err := os.Pipe()
+		out, err := executeRoot(t, "lint", "-c", path)
 		require.NoError(t, err)
-		os.Stdout = w
-		t.Cleanup(func() { os.Stdout = stdout })
-
-		_, err = executeRoot(t, "lint", "-c", path)
-		require.NoError(t, err)
-		require.NoError(t, w.Close())
-		os.Stdout = stdout
-
-		out, err := io.ReadAll(r)
-		require.NoError(t, err)
-		assert.Equal(t, "Configuration schema and CEL expressions are valid.\n", string(out))
+		assert.Equal(t, "Configuration schema and CEL expressions are valid.\n", out)
 	})
 
 	t.Run("invalid config path", func(t *testing.T) {
 		_, err := executeRoot(t, "lint", "-c", filepath.Join(t.TempDir(), "missing.yaml"))
 		assert.ErrorContains(t, err, "read config")
 	})
+}
 
-	t.Run("invalid assertions", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "invalid-cel.yaml")
-		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: test\n    url: http://example.com\n    assertions:\n      - status === 200\n"), 0644))
+// TestRunAndLintRejectSameManifests checks that run and lint reject the same
+// bad manifest with the same error text.
+func TestRunAndLintRejectSameManifests(t *testing.T) {
+	server := newTargetServer(t)
 
-		_, err := executeRoot(t, "lint", "-c", path)
-		assert.ErrorContains(t, err, "validate assertions")
-	})
+	tests := []struct {
+		name     string
+		manifest string
+		expected string
+	}{
+		{
+			name:     "structurally invalid manifest",
+			manifest: "targets:\n  - name: test\n    url: " + server.URL + "\n    method: get\n",
+			expected: `^validate config: target "test": method must be uppercase$`,
+		},
+		{
+			name:     "invalid CEL",
+			manifest: "targets:\n  - name: test\n    url: " + server.URL + "\n    assertions:\n      - status === 200\n",
+			expected: `^compile assertions: target "test" failed compiling assertion "status === 200": .*Syntax error`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "targets.yaml")
+			require.NoError(t, os.WriteFile(path, []byte(tt.manifest), 0644))
+
+			runOut, runErr := executeRoot(t, "run", "-c", path, "-o", "summary")
+			lintOut, lintErr := executeRoot(t, "lint", "-c", path)
+
+			require.Error(t, runErr)
+			require.Error(t, lintErr)
+			assert.Regexp(t, tt.expected, runErr.Error())
+			assert.Equal(t, runErr.Error(), lintErr.Error())
+			assert.Empty(t, runOut)
+			assert.Empty(t, lintOut)
+		})
+	}
 }

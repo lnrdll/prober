@@ -55,16 +55,8 @@ func TestTargetTimeout(t *testing.T) {
 func TestProbeTarget(t *testing.T) {
 	// Helper to compile CEL assertions for tests
 	compileAssertions := func(assertions []string) []cel.Program {
-		env, _ := cel.NewEnv(
-			cel.Variable("status", cel.IntType),
-			cel.Variable("body", cel.StringType),
-			cel.Variable("latency_ms", cel.IntType),
-			cel.Variable("ssl_days_left", cel.IntType),
-			cel.Variable("ssl_issuer", cel.StringType),
-			cel.Variable("ssl_subject", cel.StringType),
-			cel.Variable("ssl_dns_names", cel.StringType),
-			cel.Variable("headers", cel.MapType(cel.StringType, cel.StringType)),
-		)
+		env, err := newCELEnv()
+		require.NoError(t, err)
 		var compiledProgs []cel.Program
 		for _, expr := range assertions {
 			ast, iss := env.Compile(expr)
@@ -371,11 +363,11 @@ func TestExecuteSummary(t *testing.T) {
 	}))
 	defer server.Close()
 
-	compiledTargets, err := CompileTargetAssertions([]config.Target{
+	compiledTargets, err := Prepare(config.Config{Targets: []config.Target{
 		{Name: "pass", URL: server.URL, Assertions: []string{"status == 200"}},
 		{Name: "fail", URL: server.URL, Assertions: []string{"status == 500"}},
 		{Name: "skip", URL: server.URL, Disabled: true},
-	})
+	}})
 	require.NoError(t, err)
 
 	var published []string

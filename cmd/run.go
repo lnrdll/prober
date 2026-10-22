@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/lnrdll/prober/internal/config"
 	"github.com/lnrdll/prober/internal/output"
 	"github.com/lnrdll/prober/internal/prober"
 
@@ -31,13 +30,9 @@ func newRunCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := config.Validate(cfg); err != nil {
-				return fmt.Errorf("validate config: %w", err)
-			}
-
-			compiledTargets, err := prober.CompileTargetAssertions(cfg.Targets)
+			targets, err := prober.Prepare(cfg)
 			if err != nil {
-				return fmt.Errorf("compile probe assertions: %w", err)
+				return err
 			}
 
 			setting := func(name output.Name, value string) output.Setting {
@@ -55,7 +50,7 @@ func newRunCmd() *cobra.Command {
 				return err
 			}
 
-			summary := prober.Execute(compiledTargets, outputs.Publish)
+			summary := prober.Execute(targets, outputs.Publish)
 			outputErr := outputs.Finish(summary)
 
 			var targetErr error

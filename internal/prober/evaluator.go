@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"cel.dev/cel-go/cel"
-	"github.com/lnrdll/prober/internal/config"
 )
 
 type EvalContext struct {
@@ -18,9 +17,9 @@ type EvalContext struct {
 	Headers     map[string]string
 }
 
-// CompileTargetAssertions builds the CEL environment and parses expressions once at startup.
-func CompileTargetAssertions(targets []config.Target) ([]config.Target, error) {
-	env, err := cel.NewEnv(
+// newCELEnv declares the variables an assertion can read.
+func newCELEnv() (*cel.Env, error) {
+	return cel.NewEnv(
 		cel.Variable("status", cel.IntType),
 		cel.Variable("body", cel.StringType),
 		cel.Variable("latency_ms", cel.IntType),
@@ -30,34 +29,6 @@ func CompileTargetAssertions(targets []config.Target) ([]config.Target, error) {
 		cel.Variable("ssl_dns_names", cel.StringType),
 		cel.Variable("headers", cel.MapType(cel.StringType, cel.StringType)),
 	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build restricted CEL env: %w", err)
-	}
-
-	for i := range targets {
-		if targets[i].Disabled {
-			continue
-		}
-
-		// Default to traditional response safety boundaries if no assertions exist
-		if len(targets[i].Assertions) == 0 {
-			targets[i].Assertions = []string{"status >= 200 && status < 400"}
-		}
-
-		for _, expr := range targets[i].Assertions {
-			ast, iss := env.Compile(expr)
-			if iss.Err() != nil {
-				return nil, fmt.Errorf("target '%s' failed compiling assertion '%s': %v", targets[i].Name, expr, iss.Err())
-			}
-
-			prog, err := env.Program(ast)
-			if err != nil {
-				return nil, fmt.Errorf("failed program instantiation: %w", err)
-			}
-			targets[i].CompiledCel = append(targets[i].CompiledCel, prog)
-		}
-	}
-	return targets, nil
 }
 
 // EvaluatePrecompiled runs the specific program against data fields in memory.

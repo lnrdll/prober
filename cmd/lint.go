@@ -22,12 +22,12 @@ func newLintCmd() *cobra.Command {
 				return err
 			}
 
-			if _, err := prober.CompileTargetAssertions(cfg.Targets); err != nil {
-				return fmt.Errorf("validate assertions: %w", err)
+			if _, err := prober.Prepare(cfg); err != nil {
+				return err
 			}
 
-			fmt.Println("Configuration schema and CEL expressions are valid.")
-			return nil
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), "Configuration schema and CEL expressions are valid.")
+			return err
 		},
 	}
 

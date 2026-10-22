@@ -207,7 +207,7 @@ FAILED https://example.com status=500 reason=status == 200
 
 ### `prober lint`
 
-Parse the manifest and compile CEL assertions without probing:
+Check the manifest without probing. Lint runs the same structural validation as `prober run` (names, URLs, methods, timeouts, retries, headers) and compiles every enabled target's CEL assertions, so it rejects exactly what `run` rejects, with the same error text:
 
 ```bash
 prober lint -c targets.yaml
