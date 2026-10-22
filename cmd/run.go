@@ -30,7 +30,7 @@ func newRunCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			targets, err := prober.Prepare(cfg)
+			plan, err := prober.Prepare(cfg)
 			if err != nil {
 				return err
 			}
@@ -50,7 +50,7 @@ func newRunCmd() *cobra.Command {
 				return err
 			}
 
-			summary := prober.Execute(targets, outputs.Publish)
+			summary := prober.Execute(plan, outputs.Publish)
 			outputErr := outputs.Finish(summary)
 
 			var targetErr error

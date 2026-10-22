@@ -1,7 +1,5 @@
 package config
 
-import "cel.dev/cel-go/cel"
-
 type Target struct {
 	Name          string            `yaml:"name"`
 	URL           string            `yaml:"url"`
@@ -14,8 +12,6 @@ type Target struct {
 	Body          string            `yaml:"body"`
 	Assertions    []string          `yaml:"assertions"`
 	Tags          map[string]string `yaml:"tags"`
-
-	CompiledCel []cel.Program `yaml:"-"`
 }
 
 type Config struct {

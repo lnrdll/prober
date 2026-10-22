@@ -6,7 +6,14 @@ import (
 	"cel.dev/cel-go/cel"
 )
 
-type EvalContext struct {
+// assertion pairs an assertion's text with its compiled program, so a failure
+// always reports the expression that ran.
+type assertion struct {
+	text    string
+	program cel.Program
+}
+
+type evalContext struct {
 	Status      int
 	Body        string
 	LatencyMS   int64
@@ -31,8 +38,8 @@ func newCELEnv() (*cel.Env, error) {
 	)
 }
 
-// EvaluatePrecompiled runs the specific program against data fields in memory.
-func EvaluatePrecompiled(prog cel.Program, ctx EvalContext) (bool, error) {
+// evaluate runs the assertion's program against data fields in memory.
+func (a assertion) evaluate(ctx evalContext) (bool, error) {
 	input := map[string]any{
 		"status":        int64(ctx.Status),
 		"body":          ctx.Body,
@@ -44,7 +51,7 @@ func EvaluatePrecompiled(prog cel.Program, ctx EvalContext) (bool, error) {
 		"headers":       ctx.Headers,
 	}
 
-	out, _, err := prog.Eval(input)
+	out, _, err := a.program.Eval(input)
 	if err != nil {
 		return false, err
 	}

@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"cel.dev/cel-go/cel"
 	"github.com/lnrdll/prober/internal/config"
 	"github.com/lnrdll/prober/internal/output"
 	"github.com/stretchr/testify/assert"
@@ -53,25 +52,6 @@ func TestTargetTimeout(t *testing.T) {
 }
 
 func TestProbeTarget(t *testing.T) {
-	// Helper to compile CEL assertions for tests
-	compileAssertions := func(assertions []string) []cel.Program {
-		env, err := newCELEnv()
-		require.NoError(t, err)
-		var compiledProgs []cel.Program
-		for _, expr := range assertions {
-			ast, iss := env.Compile(expr)
-			if iss.Err() != nil {
-				t.Fatalf("failed compiling assertion '%s': %s", expr, iss.Err())
-			}
-			prog, err := env.Program(ast)
-			if err != nil {
-				t.Fatalf("failed program instantiation: %s", err)
-			}
-			compiledProgs = append(compiledProgs, prog)
-		}
-		return compiledProgs
-	}
-
 	defaultClient := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
@@ -90,7 +70,7 @@ func TestProbeTarget(t *testing.T) {
 		defer server.Close()
 
 		target := config.Target{URL: server.URL}
-		result := probeTarget(target, defaultClient)
+		result := probeTarget(prepareTarget(t, target), defaultClient)
 		assert.Empty(t, result.Error)
 		assert.True(t, result.Up)
 		assert.Equal(t, http.MethodGet, result.Method)
@@ -104,7 +84,7 @@ func TestProbeTarget(t *testing.T) {
 		defer server.Close()
 
 		target := config.Target{URL: server.URL}
-		result := probeTarget(target, defaultClient)
+		result := probeTarget(prepareTarget(t, target), defaultClient)
 		assert.Empty(t, result.Error)
 		assert.True(t, result.Up)
 	})
@@ -120,7 +100,7 @@ func TestProbeTarget(t *testing.T) {
 			URL:     server.URL,
 			Headers: map[string]string{"X-Custom-Header": "custom-value"},
 		}
-		result := probeTarget(target, defaultClient)
+		result := probeTarget(prepareTarget(t, target), defaultClient)
 		assert.Empty(t, result.Error)
 		assert.True(t, result.Up)
 	})
@@ -130,7 +110,7 @@ func TestProbeTarget(t *testing.T) {
 		for _, host := range ssrfHosts {
 			t.Run(fmt.Sprintf("blocks %s", host), func(t *testing.T) {
 				target := config.Target{URL: host}
-				result := probeTarget(target, defaultClient)
+				result := probeTarget(prepareTarget(t, target), defaultClient)
 				assert.NotEmpty(t, result.Error)
 				assert.Contains(t, result.Error, "SSRF Alert")
 				assert.False(t, result.Up)
@@ -151,7 +131,7 @@ func TestProbeTarget(t *testing.T) {
 				}
 
 				target := config.Target{URL: host, Retries: 2}
-				result := probeTarget(target, countingClient)
+				result := probeTarget(prepareTarget(t, target), countingClient)
 				assert.Equal(t, "SSRF Alert: Request to Cloud Metadata Server explicitly blocked", result.Error)
 				assert.False(t, result.Up)
 				assert.Equal(t, 0, requests)
@@ -171,10 +151,11 @@ func TestProbeTarget(t *testing.T) {
 		defer server.Close()
 
 		target := config.Target{URL: server.URL}
-		result := probeTarget(target, defaultClient)
+		result := probeTarget(prepareTarget(t, target), defaultClient)
 
 		assert.Empty(t, result.Error)
-		assert.True(t, result.Up) // Default assertion passes for 418
+		assert.False(t, result.Up) // 418 fails the default assertion
+		assert.Equal(t, "status >= 200 && status < 400", result.FailedAssertion)
 		assert.Equal(t, http.StatusTeapot, result.Status)
 		assert.Contains(t, result.Body, expectedBody) // Body is truncated to 1024 bytes
 		assert.Contains(t, result.Headers, expectedHeaderKey)
@@ -189,11 +170,10 @@ func TestProbeTarget(t *testing.T) {
 		defer server.Close()
 
 		target := config.Target{
-			URL:         server.URL,
-			Assertions:  []string{"status == 404"}, // This will fail
-			CompiledCel: compileAssertions([]string{"status == 404"}),
+			URL:        server.URL,
+			Assertions: []string{"status == 404"}, // This will fail
 		}
-		result := probeTarget(target, defaultClient)
+		result := probeTarget(prepareTarget(t, target), defaultClient)
 
 		assert.Empty(t, result.Error)
 		assert.False(t, result.Up)
@@ -201,7 +181,9 @@ func TestProbeTarget(t *testing.T) {
 	})
 
 	t.Run("handles invalid URL / request creation failure", func(t *testing.T) {
-		target := config.Target{URL: "://invalid-url"} // Malformed URL
+		// Prepare rejects a malformed URL, so build the target by hand to reach
+		// the probe-time failure.
+		target := preparedTarget{Target: config.Target{URL: "://invalid-url"}}
 		result := probeTarget(target, defaultClient)
 
 		assert.NotEmpty(t, result.Error)
@@ -229,7 +211,7 @@ func TestProbeTarget(t *testing.T) {
 			},
 		}
 
-		result := probeTarget(target, clientWithShortTimeout)
+		result := probeTarget(prepareTarget(t, target), clientWithShortTimeout)
 
 		assert.NotEmpty(t, result.Error)
 		assert.Contains(t, result.Error, "context deadline exceeded")
@@ -251,7 +233,7 @@ func TestProbeTarget(t *testing.T) {
 			Method: http.MethodPost,
 			Body:   expectedBody,
 		}
-		result := probeTarget(target, defaultClient)
+		result := probeTarget(prepareTarget(t, target), defaultClient)
 		assert.Empty(t, result.Error)
 		assert.True(t, result.Up)
 	})
@@ -270,7 +252,7 @@ func TestProbeTarget(t *testing.T) {
 		}
 
 		// Use the client from the TLS server to trust its certificate
-		result := probeTarget(target, tlsServer.Client())
+		result := probeTarget(prepareTarget(t, target), tlsServer.Client())
 
 		assert.Empty(t, result.Error)
 		assert.True(t, result.Up)
@@ -304,7 +286,7 @@ func TestProbeTarget(t *testing.T) {
 			SSLSkipVerify: true,
 		}
 
-		result := probeTarget(target, insecureClient)
+		result := probeTarget(prepareTarget(t, target), insecureClient)
 
 		assert.Empty(t, result.Error)
 		assert.True(t, result.Up)
@@ -326,12 +308,11 @@ func TestProbeTarget(t *testing.T) {
 		defer server.Close()
 
 		target := config.Target{
-			URL:         server.URL,
-			Retries:     1,
-			Assertions:  []string{"status == 200"},
-			CompiledCel: compileAssertions([]string{"status == 200"}),
+			URL:        server.URL,
+			Retries:    1,
+			Assertions: []string{"status == 200"},
 		}
-		result := probeTarget(target, defaultClient)
+		result := probeTarget(prepareTarget(t, target), defaultClient)
 		assert.True(t, result.Up)
 		assert.Equal(t, 2, attempts)
 	})
@@ -345,12 +326,11 @@ func TestProbeTarget(t *testing.T) {
 		defer server.Close()
 
 		target := config.Target{
-			URL:         server.URL,
-			Retries:     2,
-			Assertions:  []string{"status == 200"},
-			CompiledCel: compileAssertions([]string{"status == 200"}),
+			URL:        server.URL,
+			Retries:    2,
+			Assertions: []string{"status == 200"},
 		}
-		result := probeTarget(target, defaultClient)
+		result := probeTarget(prepareTarget(t, target), defaultClient)
 		assert.False(t, result.Up)
 		assert.Equal(t, "status == 200", result.FailedAssertion)
 		assert.Equal(t, 3, attempts)
@@ -363,7 +343,7 @@ func TestExecuteSummary(t *testing.T) {
 	}))
 	defer server.Close()
 
-	compiledTargets, err := Prepare(config.Config{Targets: []config.Target{
+	plan, err := Prepare(config.Config{Targets: []config.Target{
 		{Name: "pass", URL: server.URL, Assertions: []string{"status == 200"}},
 		{Name: "fail", URL: server.URL, Assertions: []string{"status == 500"}},
 		{Name: "skip", URL: server.URL, Disabled: true},
@@ -371,7 +351,7 @@ func TestExecuteSummary(t *testing.T) {
 	require.NoError(t, err)
 
 	var published []string
-	summary := Execute(compiledTargets, func(res output.Result) {
+	summary := Execute(plan, func(res output.Result) {
 		published = append(published, res.Name)
 	})
 
@@ -382,6 +362,18 @@ func TestExecuteSummary(t *testing.T) {
 	assert.Len(t, summary.Results, 2)
 	assert.ElementsMatch(t, []string{"pass", "fail"}, published)
 	assert.GreaterOrEqual(t, summary.Duration, time.Duration(0))
+}
+
+// prepareTarget prepares a single target, naming it when the test left the
+// name out, and returns its prepared form.
+func prepareTarget(t *testing.T, target config.Target) preparedTarget {
+	t.Helper()
+	if target.Name == "" {
+		target.Name = "test"
+	}
+	plan, err := Prepare(config.Config{Targets: []config.Target{target}})
+	require.NoError(t, err)
+	return plan.targets[0]
 }
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)

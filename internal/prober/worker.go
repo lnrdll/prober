@@ -21,9 +21,9 @@ const defaultTargetTimeoutSeconds = 60
 // Execute probes every enabled target and returns the summary. It calls publish
 // once per result as each probe finishes, always from the calling goroutine, so
 // calls within one Execute never overlap. Skipped targets are not published.
-func Execute(targets []config.Target, publish func(output.Result)) output.Summary {
+func Execute(plan Plan, publish func(output.Result)) output.Summary {
 	start := time.Now()
-	summary := output.Summary{Total: len(targets)}
+	summary := output.Summary{Total: len(plan.targets)}
 	// 1. Maintain two global reusable transports for connection pooling
 	secureClient := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -46,11 +46,11 @@ func Execute(targets []config.Target, publish func(output.Result)) output.Summar
 		},
 	}
 
-	resultsChan := make(chan output.Result, len(targets))
+	resultsChan := make(chan output.Result, len(plan.targets))
 	var wg sync.WaitGroup
 
 	// 2. Parallel network probing executions
-	for _, target := range targets {
+	for _, target := range plan.targets {
 		if target.Disabled {
 			summary.Skipped++
 			summary.SkippedResults = append(summary.SkippedResults, output.Result{
@@ -64,7 +64,7 @@ func Execute(targets []config.Target, publish func(output.Result)) output.Summar
 		}
 
 		wg.Add(1)
-		go func(t config.Target) {
+		go func(t preparedTarget) {
 			defer wg.Done()
 
 			// Introduce randomized stagger jitter (0 to 1500ms) to prevent thundering herds
@@ -101,7 +101,7 @@ func Execute(targets []config.Target, publish func(output.Result)) output.Summar
 	return summary
 }
 
-func probeTarget(t config.Target, client *http.Client) output.Result {
+func probeTarget(t preparedTarget, client *http.Client) output.Result {
 	attempts := t.Retries + 1
 	if attempts < 1 {
 		attempts = 1
@@ -121,7 +121,7 @@ func probeTarget(t config.Target, client *http.Client) output.Result {
 	return lastResult
 }
 
-func probeTargetOnce(t config.Target, client *http.Client) output.Result {
+func probeTargetOnce(t preparedTarget, client *http.Client) output.Result {
 	res := output.Result{
 		Name:      t.Name,
 		URL:       t.URL,
@@ -150,7 +150,7 @@ func probeTargetOnce(t config.Target, client *http.Client) output.Result {
 	}
 	req.Header.Set("User-Agent", "prober")
 
-	ctx, cancel := context.WithTimeout(context.Background(), targetTimeout(t))
+	ctx, cancel := context.WithTimeout(context.Background(), targetTimeout(t.Target))
 	defer cancel()
 	req = req.WithContext(ctx)
 
@@ -214,7 +214,7 @@ func probeTargetOnce(t config.Target, client *http.Client) output.Result {
 	res.SSLSubject = subjectStr
 	res.SSLDNSNames = dnsNamesStr
 
-	evalCtx := EvalContext{
+	evalCtx := evalContext{
 		Status:      resp.StatusCode,
 		Body:        respStr,
 		LatencyMS:   res.LatencyMS,
@@ -227,11 +227,11 @@ func probeTargetOnce(t config.Target, client *http.Client) output.Result {
 
 	res.Up = true
 	// High Performance: Use precompiled execution references
-	for idx, prog := range t.CompiledCel {
-		passed, err := EvaluatePrecompiled(prog, evalCtx)
+	for _, a := range t.assertions {
+		passed, err := a.evaluate(evalCtx)
 		if err != nil || !passed {
 			res.Up = false
-			res.FailedAssertion = t.Assertions[idx]
+			res.FailedAssertion = a.text
 			break
 		}
 	}

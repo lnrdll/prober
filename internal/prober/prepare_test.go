@@ -5,7 +5,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"cel.dev/cel-go/cel"
 	"github.com/lnrdll/prober/internal/config"
 	"github.com/lnrdll/prober/internal/output"
 	"github.com/stretchr/testify/assert"
@@ -26,35 +25,96 @@ func newStatusServer(t *testing.T, status int) *httptest.Server {
 // preparation fails.
 func prepareAndExecute(t *testing.T, cfg config.Config) output.Summary {
 	t.Helper()
-	targets, err := Prepare(cfg)
+	plan, err := Prepare(cfg)
 	require.NoError(t, err)
-	return Execute(targets, func(output.Result) {})
+	return Execute(plan, func(output.Result) {})
+}
+
+// resultsByName indexes a summary's results by target name.
+func resultsByName(summary output.Summary) map[string]output.Result {
+	results := make(map[string]output.Result, len(summary.Results))
+	for _, res := range summary.Results {
+		results[res.Name] = res
+	}
+	return results
 }
 
 func TestPrepare(t *testing.T) {
 	t.Run("applies the default assertion to targets without assertions", func(t *testing.T) {
-		failing := newStatusServer(t, http.StatusInternalServerError)
-		passing := newStatusServer(t, http.StatusNoContent)
+		serverError := newStatusServer(t, http.StatusInternalServerError)
+		teapot := newStatusServer(t, http.StatusTeapot)
+		noContent := newStatusServer(t, http.StatusNoContent)
 
 		summary := prepareAndExecute(t, config.Config{Targets: []config.Target{
-			{Name: "failing", URL: failing.URL},
-			{Name: "passing", URL: passing.URL},
+			{Name: "server-error", URL: serverError.URL},
+			{Name: "teapot", URL: teapot.URL},
+			{Name: "no-content", URL: noContent.URL},
 		}})
 
 		assert.Equal(t, 1, summary.Passed)
-		assert.Equal(t, 1, summary.Failed)
-		for _, res := range summary.Results {
-			if res.Name == "failing" {
-				assert.Equal(t, "status >= 200 && status < 400", res.FailedAssertion)
-			}
+		assert.Equal(t, 2, summary.Failed)
+		results := resultsByName(summary)
+		for _, name := range []string{"server-error", "teapot"} {
+			assert.False(t, results[name].Up, name)
+			assert.Equal(t, "status >= 200 && status < 400", results[name].FailedAssertion, name)
+		}
+		assert.True(t, results["no-content"].Up)
+		assert.Empty(t, results["no-content"].FailedAssertion)
+	})
+
+	t.Run("reports the first failing assertion of several", func(t *testing.T) {
+		server := newStatusServer(t, http.StatusOK)
+
+		summary := prepareAndExecute(t, config.Config{Targets: []config.Target{
+			{Name: "passing", URL: server.URL, Assertions: []string{"status == 200", "status < 300"}},
+			{Name: "failing", URL: server.URL, Assertions: []string{"status == 200", "status == 500", "status == 404"}},
+		}})
+
+		results := resultsByName(summary)
+		assert.True(t, results["passing"].Up)
+		assert.Empty(t, results["passing"].FailedAssertion)
+		assert.False(t, results["failing"].Up)
+		assert.Equal(t, "status == 500", results["failing"].FailedAssertion)
+	})
+
+	t.Run("exposes every response variable to assertions", func(t *testing.T) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Probe", "ok")
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte("hello prober"))
+		}))
+		t.Cleanup(server.Close)
+
+		// The httptest certificate is issued by and to "Acme Co" for example.com.
+		assertions := map[string]string{
+			"status":        "status == 202",
+			"body":          "body.contains('hello prober')",
+			"headers":       "headers['X-Probe'] == 'ok'",
+			"latency_ms":    "latency_ms >= 0 && latency_ms < 10000",
+			"ssl_days_left": "ssl_days_left > 0",
+			"ssl_issuer":    "ssl_issuer.contains('Acme Co')",
+			"ssl_subject":   "ssl_subject.contains('Acme Co')",
+			"ssl_dns_names": "ssl_dns_names.contains('example.com')",
+		}
+		var targets []config.Target
+		for name, expr := range assertions {
+			targets = append(targets, config.Target{Name: name, URL: server.URL, SSLSkipVerify: true, Assertions: []string{expr}})
+		}
+
+		summary := prepareAndExecute(t, config.Config{Targets: targets})
+
+		results := resultsByName(summary)
+		require.Len(t, results, len(assertions))
+		for name, res := range results {
+			assert.Empty(t, res.Error, name)
+			assert.True(t, res.Up, "%s: %s failed", name, res.FailedAssertion)
 		}
 	})
 
 	t.Run("preparing twice reports a failing assertion once with its text", func(t *testing.T) {
 		server := newStatusServer(t, http.StatusOK)
-		existing := []cel.Program{nil}
 		cfg := config.Config{Targets: []config.Target{
-			{Name: "failing", URL: server.URL, Assertions: []string{"status == 200", "status == 500"}, CompiledCel: existing},
+			{Name: "failing", URL: server.URL, Assertions: []string{"status == 200", "status == 500"}},
 			{Name: "defaulted", URL: server.URL},
 		}}
 
@@ -62,20 +122,13 @@ func TestPrepare(t *testing.T) {
 			summary := prepareAndExecute(t, cfg)
 
 			require.Len(t, summary.Results, 2)
-			for _, res := range summary.Results {
-				if res.Name == "failing" {
-					assert.False(t, res.Up)
-					assert.Equal(t, "status == 500", res.FailedAssertion)
-				}
-			}
+			results := resultsByName(summary)
+			assert.False(t, results["failing"].Up)
+			assert.Equal(t, "status == 500", results["failing"].FailedAssertion)
 			assert.Equal(t, 1, summary.Failed)
 		}
 		assert.Equal(t, []string{"status == 200", "status == 500"}, cfg.Targets[0].Assertions)
-		require.Len(t, cfg.Targets[0].CompiledCel, 1)
-		assert.Nil(t, cfg.Targets[0].CompiledCel[0])
-		assert.Equal(t, existing, cfg.Targets[0].CompiledCel)
 		assert.Nil(t, cfg.Targets[1].Assertions)
-		assert.Nil(t, cfg.Targets[1].CompiledCel)
 	})
 
 	t.Run("skips disabled targets without compiling them", func(t *testing.T) {
@@ -139,6 +192,7 @@ func TestPrepare(t *testing.T) {
 
 		require.Len(t, summary.Results, 1)
 		assert.False(t, summary.Results[0].Up)
+		assert.Equal(t, "dyn(status + 1)", summary.Results[0].FailedAssertion)
 		assert.Equal(t, 1, summary.Failed)
 	})
 
