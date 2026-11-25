@@ -34,6 +34,9 @@ func Validate(cfg Config) error {
 		if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
 			return fmt.Errorf("target %q: invalid url %q", label, target.URL)
 		}
+		if scheme := strings.ToLower(parsedURL.Scheme); scheme != "http" && scheme != "https" {
+			return fmt.Errorf("target %q: unsupported url scheme %q", label, parsedURL.Scheme)
+		}
 
 		if target.Method != "" {
 			method := strings.ToUpper(target.Method)

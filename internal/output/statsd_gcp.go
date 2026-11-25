@@ -1,6 +1,10 @@
 package output
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/lnrdll/prober/internal/prober"
+)
 
 type gcpPublisher struct {
 	sender *statsdSender
@@ -14,7 +18,7 @@ func newGCPPublisher(cfg Config) (publisher, error) {
 	return &gcpPublisher{sender: sender}, nil
 }
 
-func (p *gcpPublisher) Publish(res Result) error {
+func (p *gcpPublisher) Publish(res prober.Result) error {
 	metricNameStatus := "uptime_prober.status"
 	metricNameLatency := "uptime_prober.latency_ms"
 

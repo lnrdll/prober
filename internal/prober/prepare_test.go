@@ -1,12 +1,13 @@
 package prober
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/lnrdll/prober/internal/config"
-	"github.com/lnrdll/prober/internal/output"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -23,16 +24,17 @@ func newStatusServer(t *testing.T, status int) *httptest.Server {
 
 // prepareAndExecute prepares cfg and executes the result, failing the test if
 // preparation fails.
-func prepareAndExecute(t *testing.T, cfg config.Config) output.Summary {
+func prepareAndExecute(t *testing.T, cfg config.Config) Summary {
 	t.Helper()
 	plan, err := Prepare(cfg)
 	require.NoError(t, err)
-	return Execute(plan, func(output.Result) {})
+	runner := Runner{Jitter: func() time.Duration { return 0 }}
+	return runner.Execute(context.Background(), plan, nil)
 }
 
 // resultsByName indexes a summary's results by target name.
-func resultsByName(summary output.Summary) map[string]output.Result {
-	results := make(map[string]output.Result, len(summary.Results))
+func resultsByName(summary Summary) map[string]Result {
+	results := make(map[string]Result, len(summary.Results))
 	for _, res := range summary.Results {
 		results[res.Name] = res
 	}

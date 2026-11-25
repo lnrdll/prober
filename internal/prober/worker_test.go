@@ -1,21 +1,27 @@
 package prober
 
 import (
+	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/lnrdll/prober/internal/config"
-	"github.com/lnrdll/prober/internal/output"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
+func zeroJitter() time.Duration { return 0 }
+
 func TestTargetTimeout(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name          string
 		targetTimeout int
@@ -52,14 +58,19 @@ func TestTargetTimeout(t *testing.T) {
 }
 
 func TestProbeTarget(t *testing.T) {
-	defaultClient := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-		Transport: &http.Transport{
-			MaxIdleConnsPerHost: 10,
-			IdleConnTimeout:     90 * time.Second,
-		},
+	t.Parallel()
+	defaultRunner := Runner{Jitter: zeroJitter}
+
+	runSingle := func(t *testing.T, runner Runner, target config.Target) Result {
+		t.Helper()
+		if target.Name == "" {
+			target.Name = "test"
+		}
+		plan, err := Prepare(config.Config{Targets: []config.Target{target}})
+		require.NoError(t, err)
+		summary := runner.Execute(context.Background(), plan, nil)
+		require.Len(t, summary.Results, 1)
+		return summary.Results[0]
 	}
 
 	t.Run("defaults method to GET", func(t *testing.T) {
@@ -69,8 +80,7 @@ func TestProbeTarget(t *testing.T) {
 		}))
 		defer server.Close()
 
-		target := config.Target{URL: server.URL}
-		result := probeTarget(prepareTarget(t, target), defaultClient)
+		result := runSingle(t, defaultRunner, config.Target{URL: server.URL})
 		assert.Empty(t, result.Error)
 		assert.True(t, result.Up)
 		assert.Equal(t, http.MethodGet, result.Method)
@@ -83,8 +93,7 @@ func TestProbeTarget(t *testing.T) {
 		}))
 		defer server.Close()
 
-		target := config.Target{URL: server.URL}
-		result := probeTarget(prepareTarget(t, target), defaultClient)
+		result := runSingle(t, defaultRunner, config.Target{URL: server.URL})
 		assert.Empty(t, result.Error)
 		assert.True(t, result.Up)
 	})
@@ -100,41 +109,38 @@ func TestProbeTarget(t *testing.T) {
 			URL:     server.URL,
 			Headers: map[string]string{"X-Custom-Header": "custom-value"},
 		}
-		result := probeTarget(prepareTarget(t, target), defaultClient)
+		result := runSingle(t, defaultRunner, target)
 		assert.Empty(t, result.Error)
 		assert.True(t, result.Up)
 	})
 
-	t.Run("blocks SSRF metadata hosts", func(t *testing.T) {
-		ssrfHosts := []string{"http://169.254.169.254", "http://metadata.google.internal"}
-		for _, host := range ssrfHosts {
-			t.Run(fmt.Sprintf("blocks %s", host), func(t *testing.T) {
-				target := config.Target{URL: host}
-				result := probeTarget(prepareTarget(t, target), defaultClient)
-				assert.NotEmpty(t, result.Error)
-				assert.Contains(t, result.Error, "SSRF Alert")
-				assert.False(t, result.Up)
-			})
-		}
-	})
-
 	t.Run("blocks SSRF metadata hosts without sending or retrying", func(t *testing.T) {
-		ssrfHosts := []string{"http://169.254.169.254/latest/meta-data/", "http://METADATA.google.internal/computeMetadata/v1/"}
+		ssrfHosts := []string{
+			"http://169.254.169.254/latest/meta-data/",
+			"http://METADATA.google.internal/computeMetadata/v1/",
+			"http://metadata.google.internal./computeMetadata/v1/",
+			"http://metadata.goog/computeMetadata/v1/",
+			"http://[::ffff:169.254.169.254]/latest/meta-data/",
+			"http://[fd00:ec2::254]/latest/meta-data/",
+			"http://169.254.170.2/v2/credentials",
+			"http://100.100.100.200/latest/meta-data/",
+		}
 		for _, host := range ssrfHosts {
 			t.Run(fmt.Sprintf("blocks %s", host), func(t *testing.T) {
-				requests := 0
-				countingClient := &http.Client{
+				var requests atomic.Int32
+				runner := Runner{
+					Jitter: zeroJitter,
 					Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-						requests++
+						requests.Add(1)
 						return nil, fmt.Errorf("unexpected request to %s", r.URL)
 					}),
 				}
 
 				target := config.Target{URL: host, Retries: 2}
-				result := probeTarget(prepareTarget(t, target), countingClient)
-				assert.Equal(t, "SSRF Alert: Request to Cloud Metadata Server explicitly blocked", result.Error)
+				result := runSingle(t, runner, target)
+				assert.Equal(t, errSSRFBlocked.Error(), result.Error)
 				assert.False(t, result.Up)
-				assert.Equal(t, 0, requests)
+				assert.Equal(t, int32(0), requests.Load())
 			})
 		}
 	})
@@ -150,8 +156,7 @@ func TestProbeTarget(t *testing.T) {
 		}))
 		defer server.Close()
 
-		target := config.Target{URL: server.URL}
-		result := probeTarget(prepareTarget(t, target), defaultClient)
+		result := runSingle(t, defaultRunner, config.Target{URL: server.URL})
 
 		assert.Empty(t, result.Error)
 		assert.False(t, result.Up) // 418 fails the default assertion
@@ -165,15 +170,15 @@ func TestProbeTarget(t *testing.T) {
 
 	t.Run("marks Up=false and FailedAssertion on failed assertion", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK) // Status 200
+			w.WriteHeader(http.StatusOK)
 		}))
 		defer server.Close()
 
 		target := config.Target{
 			URL:        server.URL,
-			Assertions: []string{"status == 404"}, // This will fail
+			Assertions: []string{"status == 404"},
 		}
-		result := probeTarget(prepareTarget(t, target), defaultClient)
+		result := runSingle(t, defaultRunner, target)
 
 		assert.Empty(t, result.Error)
 		assert.False(t, result.Up)
@@ -184,7 +189,7 @@ func TestProbeTarget(t *testing.T) {
 		// Prepare rejects a malformed URL, so build the target by hand to reach
 		// the probe-time failure.
 		target := preparedTarget{Target: config.Target{URL: "://invalid-url"}}
-		result := probeTarget(target, defaultClient)
+		result := probeTarget(context.Background(), target, &http.Client{}, time.Now)
 
 		assert.NotEmpty(t, result.Error)
 		assert.Contains(t, result.Error, "missing protocol scheme")
@@ -192,30 +197,43 @@ func TestProbeTarget(t *testing.T) {
 	})
 
 	t.Run("handles timeout/cancel path", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			time.Sleep(200 * time.Millisecond) // Longer than target timeout
-			w.WriteHeader(http.StatusOK)
-		}))
-		defer server.Close()
-
-		target := config.Target{
-			URL:     server.URL,
-			Timeout: 1, // 1 second timeout
-		}
-		// Override the client's timeout to ensure the context timeout is hit
-		clientWithShortTimeout := &http.Client{
-			Timeout: 100 * time.Millisecond, // Shorter than server sleep
-			Transport: &http.Transport{
-				MaxIdleConnsPerHost: 10,
-				IdleConnTimeout:     90 * time.Second,
-			},
+		runner := Runner{
+			Jitter: zeroJitter,
+			Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				<-r.Context().Done()
+				return nil, r.Context().Err()
+			}),
 		}
 
-		result := probeTarget(prepareTarget(t, target), clientWithShortTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
+
+		plan, err := Prepare(config.Config{Targets: []config.Target{{Name: "slow", URL: "http://example.com", Timeout: 10}}})
+		require.NoError(t, err)
+		summary := runner.Execute(ctx, plan, nil)
+		require.Len(t, summary.Results, 1)
+		result := summary.Results[0]
 
 		assert.NotEmpty(t, result.Error)
 		assert.Contains(t, result.Error, "context deadline exceeded")
 		assert.False(t, result.Up)
+	})
+
+	t.Run("handles body read errors", func(t *testing.T) {
+		runner := Runner{
+			Jitter: zeroJitter,
+			Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       failingReadCloser{err: errors.New("connection reset by peer")},
+				}, nil
+			}),
+		}
+
+		result := runSingle(t, runner, config.Target{URL: "http://example.com"})
+		assert.False(t, result.Up)
+		assert.Contains(t, result.Error, "connection reset by peer")
 	})
 
 	t.Run("handles request body", func(t *testing.T) {
@@ -233,60 +251,40 @@ func TestProbeTarget(t *testing.T) {
 			Method: http.MethodPost,
 			Body:   expectedBody,
 		}
-		result := probeTarget(prepareTarget(t, target), defaultClient)
+		result := runSingle(t, defaultRunner, target)
 		assert.Empty(t, result.Error)
 		assert.True(t, result.Up)
 	})
 
 	t.Run("handles SSL information capture", func(t *testing.T) {
-		// This test requires a TLS server, which httptest.NewTLSServer provides.
-		// However, to avoid "x509: certificate signed by unknown authority" errors
-		// without setting InsecureSkipVerify, we need to use the client provided by the test server.
 		tlsServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		}))
 		defer tlsServer.Close()
 
-		target := config.Target{
-			URL: tlsServer.URL,
+		runner := Runner{
+			Jitter:    zeroJitter,
+			Transport: tlsServer.Client().Transport,
 		}
-
-		// Use the client from the TLS server to trust its certificate
-		result := probeTarget(prepareTarget(t, target), tlsServer.Client())
+		result := runSingle(t, runner, config.Target{URL: tlsServer.URL})
 
 		assert.Empty(t, result.Error)
 		assert.True(t, result.Up)
 		assert.GreaterOrEqual(t, result.SSLDaysLeft, 0)
 		assert.NotEmpty(t, result.SSLIssuer)
 		assert.NotEmpty(t, result.SSLSubject)
-		// DNSNames might be empty for a default httptest TLS server cert, so we don't assert NotEmpty
 	})
 
 	t.Run("handles SSLSkipVerify for insecure client", func(t *testing.T) {
-		// This test requires a TLS server, which httptest.NewTLSServer provides.
-		// We will use a custom client with InsecureSkipVerify set to true.
 		tlsServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		}))
 		defer tlsServer.Close()
 
-		insecureClient := &http.Client{
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-			Transport: &http.Transport{
-				TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
-				MaxIdleConnsPerHost: 10,
-				IdleConnTimeout:     90 * time.Second,
-			},
-		}
-
-		target := config.Target{
+		result := runSingle(t, defaultRunner, config.Target{
 			URL:           tlsServer.URL,
 			SSLSkipVerify: true,
-		}
-
-		result := probeTarget(prepareTarget(t, target), insecureClient)
+		})
 
 		assert.Empty(t, result.Error)
 		assert.True(t, result.Up)
@@ -295,63 +293,255 @@ func TestProbeTarget(t *testing.T) {
 		assert.NotEmpty(t, result.SSLSubject)
 	})
 
-	t.Run("retries until success", func(t *testing.T) {
-		attempts := 0
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			attempts++
-			if attempts == 1 {
-				w.WriteHeader(http.StatusInternalServerError)
-				return
+	t.Run("strips port from Host header for TLS SNI", func(t *testing.T) {
+		var gotHost, gotSNI string
+		tlsServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotHost = r.Host
+			if r.TLS != nil {
+				gotSNI = r.TLS.ServerName
 			}
 			w.WriteHeader(http.StatusOK)
 		}))
-		defer server.Close()
+		defer tlsServer.Close()
+
+		runner := Runner{
+			Jitter:    zeroJitter,
+			Transport: tlsServer.Client().Transport,
+		}
+		result := runSingle(t, runner, config.Target{
+			URL:     tlsServer.URL,
+			Headers: map[string]string{"Host": "example.com:8443"},
+		})
+
+		assert.Empty(t, result.Error)
+		assert.True(t, result.Up)
+		assert.Equal(t, "example.com:8443", gotHost)
+		assert.Equal(t, "example.com", gotSNI)
+	})
+
+	t.Run("retries until success", func(t *testing.T) {
+		var attempts atomic.Int32
+		runner := Runner{
+			Jitter: zeroJitter,
+			Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				status := http.StatusOK
+				if attempts.Add(1) == 1 {
+					status = http.StatusInternalServerError
+				}
+				return &http.Response{
+					StatusCode: status,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader("")),
+				}, nil
+			}),
+		}
 
 		target := config.Target{
-			URL:        server.URL,
+			URL:        "http://example.com",
 			Retries:    1,
 			Assertions: []string{"status == 200"},
 		}
-		result := probeTarget(prepareTarget(t, target), defaultClient)
+		result := runSingle(t, runner, target)
 		assert.True(t, result.Up)
-		assert.Equal(t, 2, attempts)
+		assert.Equal(t, int32(2), attempts.Load())
 	})
 
 	t.Run("returns failure after exhausting retries", func(t *testing.T) {
-		attempts := 0
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			attempts++
-			w.WriteHeader(http.StatusInternalServerError)
-		}))
-		defer server.Close()
+		var attempts atomic.Int32
+		runner := Runner{
+			Jitter: zeroJitter,
+			Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				attempts.Add(1)
+				return &http.Response{
+					StatusCode: http.StatusInternalServerError,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader("")),
+				}, nil
+			}),
+		}
 
 		target := config.Target{
-			URL:        server.URL,
+			URL:        "http://example.com",
 			Retries:    2,
 			Assertions: []string{"status == 200"},
 		}
-		result := probeTarget(prepareTarget(t, target), defaultClient)
+		result := runSingle(t, runner, target)
 		assert.False(t, result.Up)
 		assert.Equal(t, "status == 200", result.FailedAssertion)
-		assert.Equal(t, 3, attempts)
+		assert.Equal(t, int32(3), attempts.Load())
 	})
 }
 
+func TestRunnerConcurrencyAndCancellation(t *testing.T) {
+	t.Parallel()
+
+	t.Run("bounds concurrent probes to MaxConcurrency", func(t *testing.T) {
+		var inFlight, maxInFlight atomic.Int32
+		entered := make(chan struct{}, 6)
+		release := make(chan struct{})
+
+		runner := Runner{
+			Jitter:         zeroJitter,
+			MaxConcurrency: 2,
+			Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				cur := inFlight.Add(1)
+				for {
+					prev := maxInFlight.Load()
+					if cur <= prev || maxInFlight.CompareAndSwap(prev, cur) {
+						break
+					}
+				}
+				entered <- struct{}{}
+				<-release
+				inFlight.Add(-1)
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader("")),
+				}, nil
+			}),
+		}
+
+		targets := make([]config.Target, 6)
+		for i := range targets {
+			targets[i] = config.Target{Name: fmt.Sprintf("t-%d", i), URL: "http://example.com"}
+		}
+		plan, err := Prepare(config.Config{Targets: targets})
+		require.NoError(t, err)
+
+		done := make(chan Summary, 1)
+		go func() {
+			done <- runner.Execute(context.Background(), plan, nil)
+		}()
+
+		<-entered
+		<-entered
+		assert.Equal(t, int32(2), inFlight.Load())
+		close(release)
+
+		summary := <-done
+		assert.Equal(t, 6, summary.Passed)
+		assert.Equal(t, int32(2), maxInFlight.Load())
+	})
+
+	t.Run("cancels during jitter without sending requests", func(t *testing.T) {
+		var requests atomic.Int32
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		runner := Runner{
+			Jitter: func() time.Duration { return 10 * time.Second },
+			Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				requests.Add(1)
+				return nil, errors.New("should not run")
+			}),
+		}
+
+		plan, err := Prepare(config.Config{Targets: []config.Target{
+			{Name: "a", URL: "http://example.com"},
+			{Name: "b", URL: "http://example.com", Disabled: true},
+		}})
+		require.NoError(t, err)
+
+		summary := runner.Execute(ctx, plan, nil)
+		assert.Equal(t, int32(0), requests.Load())
+		assert.Equal(t, 2, summary.Total)
+		assert.Equal(t, 0, summary.Passed)
+		assert.Equal(t, 1, summary.Failed)
+		assert.Equal(t, 1, summary.Skipped)
+		require.Len(t, summary.Results, 1)
+		assert.Contains(t, summary.Results[0].Error, "context canceled")
+	})
+
+	t.Run("uses injected clock for timestamps and durations", func(t *testing.T) {
+		base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+		var ticks atomic.Int64
+		runner := Runner{
+			Jitter: zeroJitter,
+			Now: func() time.Time {
+				return base.Add(time.Duration(ticks.Add(1)) * 10 * time.Millisecond)
+			},
+			Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader("")),
+					TLS:        &tls.ConnectionState{},
+				}, nil
+			}),
+		}
+
+		plan, err := Prepare(config.Config{Targets: []config.Target{{Name: "a", URL: "http://example.com"}}})
+		require.NoError(t, err)
+
+		summary := runner.Execute(context.Background(), plan, nil)
+		require.Len(t, summary.Results, 1)
+		assert.Equal(t, 2026, summary.Results[0].Timestamp.Year())
+		assert.Greater(t, summary.Results[0].LatencyMS, int64(0))
+		assert.Greater(t, summary.Duration, time.Duration(0))
+	})
+}
+
+func TestBlockMetadataDial(t *testing.T) {
+	t.Parallel()
+
+	blocked := []string{
+		"169.254.169.254:80",
+		"169.254.169.254:443",
+		"[::ffff:169.254.169.254]:80",
+		"[fd00:ec2::254]:80",
+		"169.254.170.2:80",
+		"100.100.100.200:80",
+	}
+	for _, addr := range blocked {
+		t.Run("blocks "+addr, func(t *testing.T) {
+			err := blockMetadataDial("tcp", addr, nil)
+			assert.ErrorIs(t, err, errSSRFBlocked)
+		})
+	}
+
+	allowed := []string{
+		"127.0.0.1:8080",
+		"[::1]:8080",
+		"93.184.216.34:443",
+	}
+	for _, addr := range allowed {
+		t.Run("allows "+addr, func(t *testing.T) {
+			assert.NoError(t, blockMetadataDial("tcp", addr, nil))
+		})
+	}
+}
+
+func TestExtractServerName(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "example.com", extractServerName("example.com"))
+	assert.Equal(t, "example.com", extractServerName("example.com:8443"))
+	assert.Equal(t, "::1", extractServerName("[::1]:8443"))
+	assert.Equal(t, "::1", extractServerName("[::1]"))
+}
+
 func TestExecuteSummary(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
+	t.Parallel()
+	runner := Runner{
+		Jitter: zeroJitter,
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("")),
+			}, nil
+		}),
+	}
 
 	plan, err := Prepare(config.Config{Targets: []config.Target{
-		{Name: "pass", URL: server.URL, Assertions: []string{"status == 200"}},
-		{Name: "fail", URL: server.URL, Assertions: []string{"status == 500"}},
-		{Name: "skip", URL: server.URL, Disabled: true},
+		{Name: "pass", URL: "http://example.com", Assertions: []string{"status == 200"}},
+		{Name: "fail", URL: "http://example.com", Assertions: []string{"status == 500"}},
+		{Name: "skip", URL: "http://example.com", Disabled: true},
 	}})
 	require.NoError(t, err)
 
 	var published []string
-	summary := Execute(plan, func(res output.Result) {
+	summary := runner.Execute(context.Background(), plan, func(res Result) {
 		published = append(published, res.Name)
 	})
 
@@ -364,16 +554,19 @@ func TestExecuteSummary(t *testing.T) {
 	assert.GreaterOrEqual(t, summary.Duration, time.Duration(0))
 }
 
-// prepareTarget prepares a single target, naming it when the test left the
-// name out, and returns its prepared form.
-func prepareTarget(t *testing.T, target config.Target) preparedTarget {
-	t.Helper()
-	if target.Name == "" {
-		target.Name = "test"
-	}
-	plan, err := Prepare(config.Config{Targets: []config.Target{target}})
+func TestExecuteRespectsCanceledContext(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	plan, err := Prepare(config.Config{Targets: []config.Target{{Name: "a", URL: "http://example.com"}}})
 	require.NoError(t, err)
-	return plan.targets[0]
+
+	summary := Execute(ctx, plan, nil)
+	assert.Equal(t, 1, summary.Total)
+	assert.Equal(t, 1, summary.Failed)
+	require.Len(t, summary.Results, 1)
+	assert.Contains(t, summary.Results[0].Error, "context canceled")
 }
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)
@@ -381,3 +574,10 @@ type roundTripperFunc func(*http.Request) (*http.Response, error)
 func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
 }
+
+type failingReadCloser struct {
+	err error
+}
+
+func (f failingReadCloser) Read([]byte) (int, error) { return 0, f.err }
+func (f failingReadCloser) Close() error             { return nil }

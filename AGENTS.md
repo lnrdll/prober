@@ -107,15 +107,15 @@ When you edit this file, a skill or any document an agent reads: cache only what
 ## Architecture and package boundaries
 
 - `cmd.NewRootCmd` constructs a fresh Cobra command tree with local option structs on each call so CLI invocations share no flag state. Keep command flag state inside command constructors rather than package globals.
-- `internal/prober.Execute` accepts a `publish func(output.Result)` callback and calls it sequentially from the calling goroutine as probes finish. That keeps `internal/prober` independent of `internal/output` adapters.
-- `internal/output.Open` owns selection validation, default settings, adapter startup, partial-init cleanup, and grouped failure reporting through `Outputs.Finish`. Register new output backends in `internal/output/names.go` and `internal/output/outputs.go`.
-- `cmd/run.go` runs `config.Validate` before `prober.CompileTargetAssertions`, whereas `cmd/lint.go` compiles CEL assertions directly after unmarshaling YAML.
+- `internal/prober` owns `Result`, `Summary`, `Plan`, `Prepare`, `Runner`, and `Execute`. `Runner.Execute` accepts `context.Context`, a `Plan`, and a `publish func(prober.Result)` callback called sequentially from the calling goroutine as probes finish, so `internal/prober` has no dependency on `internal/output`.
+- `internal/output.Open` owns selection validation, default settings, adapter startup, partial-init cleanup, and grouped failure reporting through `Outputs.Finish`. Register new output backends in `internal/output/names.go` and `internal/output/outputs.go`. `internal/output` returns typed errors (`UnselectedSettingError`, `EmptySettingError`) that `cmd/run.go` translates into CLI flag messages.
+- Both `cmd/run.go` and `cmd/lint.go` run target preparation through `prober.Prepare`.
 
 ## Testing
 
 - Package tests live beside the code in `cmd`, `internal/config`, `internal/prober`, and `internal/output` and use `github.com/stretchr/testify`.
-- Existing tests in `cmd` and `internal/output` mutate process-wide state, including `t.Chdir`, `os.Stdout`, `internal/buildinfo` globals, and `internal/output.constructors`. Keep tests that touch those globals serial. Isolate new CLI tests through `cmd.NewRootCmd` with `SetOut` and `t.TempDir`.
-- `internal/prober.Execute` sleeps for a random stagger up to 1500 milliseconds per enabled target. Test single-target probe behaviour against `probeTarget` with `httptest.NewServer` or `httptest.NewTLSServer` to avoid real-time waits.
+- Existing tests in `cmd` and `internal/output` that mutate process-wide state (`t.Chdir`, `internal/buildinfo` globals) must stay serial. `internal/output` tests inject fakes through unexported `openWith` rather than mutating globals. Isolate new CLI tests through `cmd.NewRootCmd` or `newRootCmd` with `SetOut` and `t.TempDir`.
+- `internal/prober.Execute` sleeps for a random stagger up to 1500 milliseconds per enabled target by default. Tests pass `prober.Runner{Jitter: func() time.Duration { return 0 }}` and optional `Transport` and `Now` fakes to test through `Runner.Execute` without real-time waits.
 
 ## Commits and tracked build artifact
 

@@ -3,6 +3,8 @@ package output
 import (
 	"context"
 	"log/slog"
+
+	"github.com/lnrdll/prober/internal/prober"
 )
 
 type stdoutPublisher struct {
@@ -13,7 +15,7 @@ func newStdoutPublisher(cfg Config) (publisher, error) {
 	return &stdoutPublisher{logger: slog.New(slog.NewJSONHandler(cfg.Writer, nil))}, nil
 }
 
-func (p *stdoutPublisher) Publish(res Result) error {
+func (p *stdoutPublisher) Publish(res prober.Result) error {
 	logAttrs := []slog.Attr{
 		slog.String("url", res.URL), slog.Bool("up", res.Up), slog.Int("status", res.Status), slog.Int64("latency_ms", res.LatencyMS),
 	}

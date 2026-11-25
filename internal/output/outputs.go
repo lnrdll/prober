@@ -7,27 +7,9 @@ import (
 	"os"
 	"slices"
 	"strings"
-	"time"
-)
 
-type Result struct {
-	Name            string
-	URL             string
-	Method          string
-	Up              bool
-	Status          int
-	LatencyMS       int64
-	SSLDaysLeft     int
-	SSLIssuer       string
-	SSLSubject      string
-	SSLDNSNames     string
-	FailedAssertion string
-	Error           string
-	Body            string
-	Headers         map[string]string
-	Timestamp       time.Time
-	Tags            map[string]string
-}
+	"github.com/lnrdll/prober/internal/prober"
+)
 
 // Setting is an output's flag value and whether the user set it.
 type Setting struct {
@@ -48,17 +30,19 @@ type Config struct {
 }
 
 type publisher interface {
-	Publish(res Result) error
+	Publish(res prober.Result) error
 	Close() error
 }
 
 type summaryPublisher interface {
-	PublishSummary(summary Summary) error
+	PublishSummary(summary prober.Summary) error
 }
 
-// constructors builds each adapter from a Config whose settings already hold
-// their defaults. In-package tests replace entries with failing fakes.
-var constructors = map[Name]func(cfg Config) (publisher, error){
+type constructorFunc func(cfg Config) (publisher, error)
+
+// defaultConstructors builds each adapter from a Config whose settings already
+// hold their defaults.
+var defaultConstructors = map[Name]constructorFunc{
 	OutputSummary:       newSummaryOutput,
 	OutputJunit:         newJUnitOutput,
 	OutputStdout:        newStdoutPublisher,
@@ -83,6 +67,10 @@ type namedPublisher struct {
 // output, or stdout alone when nothing is selected. If an output fails to
 // start, Open closes the ones it already started and reports both.
 func Open(cfg Config) (*Outputs, error) {
+	return openWith(cfg, defaultConstructors)
+}
+
+func openWith(cfg Config, builders map[Name]constructorFunc) (*Outputs, error) {
 	selected, err := parseSelections(cfg.Selections)
 	if err != nil {
 		return nil, err
@@ -99,7 +87,7 @@ func Open(cfg Config) (*Outputs, error) {
 
 	o := &Outputs{failures: newFailures(selected)}
 	for _, name := range selected {
-		pub, err := constructors[name](cfg)
+		pub, err := builders[name](cfg)
 		if err != nil {
 			o.failures.record(name, opInit, err)
 			o.closeAll()
@@ -111,7 +99,7 @@ func Open(cfg Config) (*Outputs, error) {
 }
 
 // Publish sends res to every output and records each failure.
-func (o *Outputs) Publish(res Result) {
+func (o *Outputs) Publish(res prober.Result) {
 	for _, a := range o.adapters {
 		if err := a.pub.Publish(res); err != nil {
 			o.failures.record(a.name, opPublish, err)
@@ -121,7 +109,7 @@ func (o *Outputs) Publish(res Result) {
 
 // Finish publishes the summary to every output that takes one, closes every
 // output and returns the grouped failure report, or nil.
-func (o *Outputs) Finish(summary Summary) error {
+func (o *Outputs) Finish(summary prober.Summary) error {
 	for _, a := range o.adapters {
 		if sp, ok := a.pub.(summaryPublisher); ok {
 			if err := sp.PublishSummary(summary); err != nil {
@@ -142,6 +130,26 @@ func (o *Outputs) closeAll() {
 	o.adapters = nil
 }
 
+// UnselectedSettingError reports that a setting was provided for an output that
+// was not selected.
+type UnselectedSettingError struct {
+	Output Name
+}
+
+func (e UnselectedSettingError) Error() string {
+	return fmt.Sprintf("setting for output %q requires selecting %q", e.Output, e.Output)
+}
+
+// EmptySettingError reports that a selected output received an explicitly empty
+// setting value.
+type EmptySettingError struct {
+	Output Name
+}
+
+func (e EmptySettingError) Error() string {
+	return fmt.Sprintf("setting for output %q cannot be empty", e.Output)
+}
+
 // applySettings checks each output's setting against the selection and fills
 // in the default for a selected output whose setting is unset and empty.
 func applySettings(cfg Config, selected []Name) (Config, error) {
@@ -159,11 +167,11 @@ func applySettings(cfg Config, selected []Name) (Config, error) {
 		isSelected := slices.Contains(selected, s.name)
 		switch {
 		case !isSelected && s.setting.Set:
-			return Config{}, fmt.Errorf("--%s requires -o %s", s.name, s.name)
+			return Config{}, UnselectedSettingError{Output: s.name}
 		case isSelected && s.setting.Value == "" && !s.setting.Set:
 			s.setting.Value = s.fallback
 		case isSelected && s.setting.Value == "":
-			return Config{}, fmt.Errorf("--%s is required when -o %s is set", s.name, s.name)
+			return Config{}, EmptySettingError{Output: s.name}
 		}
 	}
 	return cfg, nil

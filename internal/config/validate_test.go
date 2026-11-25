@@ -38,6 +38,20 @@ func TestValidate(t *testing.T) {
 		assert.ErrorContains(t, Validate(cfg), "invalid url")
 	})
 
+	t.Run("rejects unsupported url scheme", func(t *testing.T) {
+		for _, rawURL := range []string{"ftp://example.com/file", "file://localhost/etc/passwd"} {
+			cfg := Config{Targets: []Target{{Name: "api", URL: rawURL}}}
+			assert.ErrorContains(t, Validate(cfg), "unsupported url scheme")
+		}
+	})
+
+	t.Run("accepts uppercase http and https schemes", func(t *testing.T) {
+		for _, rawURL := range []string{"HTTP://example.com", "HTTPS://example.com"} {
+			cfg := Config{Targets: []Target{{Name: "api", URL: rawURL}}}
+			require.NoError(t, Validate(cfg))
+		}
+	})
+
 	t.Run("rejects lowercase method", func(t *testing.T) {
 		cfg := Config{Targets: []Target{{Name: "api", URL: "https://example.com", Method: "get"}}}
 		assert.ErrorContains(t, Validate(cfg), "method must be uppercase")

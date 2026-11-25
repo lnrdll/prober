@@ -8,8 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/lnrdll/prober/internal/output"
+	"github.com/lnrdll/prober/internal/prober"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,7 +21,7 @@ import (
 // stdout and the error it returned.
 func executeRoot(t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	root := NewRootCmd()
+	root := newRootCmd(prober.Runner{Jitter: func() time.Duration { return 0 }})
 	out := &bytes.Buffer{}
 	root.SetArgs(args)
 	root.SetOut(out)
@@ -162,6 +164,13 @@ func TestRunCmd(t *testing.T) {
 
 		_, err := executeRoot(t, "run", "-c", path, "--file", filepath.Join(t.TempDir(), "prober.log"))
 		assert.ErrorContains(t, err, "--file requires -o file")
+	})
+
+	t.Run("rejects empty output setting when output is selected", func(t *testing.T) {
+		path := writeManifest(t, server.URL, manifestTarget{name: "passing"})
+
+		_, err := executeRoot(t, "run", "-c", path, "-o", "junit", "--junit", "")
+		assert.ErrorContains(t, err, "--junit is required when -o junit is set")
 	})
 
 	t.Run("flag defaults are exposed in help metadata", func(t *testing.T) {

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"time"
+
+	"github.com/lnrdll/prober/internal/prober"
 )
 
 type junitOutput struct {
@@ -46,9 +48,9 @@ func newJUnitOutput(cfg Config) (publisher, error) {
 	return &junitOutput{path: cfg.JUnit.Value}, nil
 }
 
-func (j *junitOutput) Publish(Result) error { return nil }
+func (j *junitOutput) Publish(prober.Result) error { return nil }
 
-func (j *junitOutput) PublishSummary(summary Summary) error {
+func (j *junitOutput) PublishSummary(summary prober.Summary) error {
 	if err := os.MkdirAll(filepath.Dir(j.path), 0o755); err != nil {
 		return err
 	}
@@ -111,7 +113,7 @@ func formatJUnitDuration(duration time.Duration) string {
 	return strconv.FormatFloat(duration.Seconds(), 'f', 3, 64)
 }
 
-func earliestTimestamp(resultSets ...[]Result) string {
+func earliestTimestamp(resultSets ...[]prober.Result) string {
 	var earliest time.Time
 	for _, results := range resultSets {
 		for _, res := range results {
@@ -131,7 +133,7 @@ func earliestTimestamp(resultSets ...[]Result) string {
 	return earliest.Format(time.RFC3339)
 }
 
-func junitCaseName(res Result) string {
+func junitCaseName(res prober.Result) string {
 	if res.Name != "" {
 		return res.Name
 	}
@@ -139,7 +141,7 @@ func junitCaseName(res Result) string {
 	return res.URL
 }
 
-func junitFailureType(res Result) string {
+func junitFailureType(res prober.Result) string {
 	if res.Error != "" {
 		return "error"
 	}

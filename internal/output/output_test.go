@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lnrdll/prober/internal/prober"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -43,7 +44,7 @@ func TestFilePublisherPublishAndClose(t *testing.T) {
 
 	pub := &filePublisher{file: f}
 	ts := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	res := Result{
+	res := prober.Result{
 		URL:       "http://example.com",
 		Up:        true,
 		Status:    200,
@@ -67,6 +68,37 @@ func TestFilePublisherPublishAndClose(t *testing.T) {
 	assert.Equal(t, res.Status, got.Status)
 	assert.Equal(t, res.LatencyMS, got.LatencyMS)
 	assert.Equal(t, res.Tags, got.Tags)
+	assert.NotContains(t, string(data), `"failed_assertion"`)
+}
+
+func TestFilePublisherRecordsFailedAssertion(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "out.log")
+	f, err := os.Create(path)
+	require.NoError(t, err)
+
+	pub := &filePublisher{file: f}
+	ts := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	res := prober.Result{
+		URL:             "http://example.com",
+		Up:              false,
+		Status:          500,
+		LatencyMS:       42,
+		FailedAssertion: "status == 200",
+		Timestamp:       ts,
+	}
+
+	require.NoError(t, pub.Publish(res))
+	require.NoError(t, pub.Close())
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(bytes.TrimSpace(data), &got))
+	assert.Equal(t, false, got["up"])
+	assert.Equal(t, "status == 200", got["failed_assertion"])
+	assert.NotContains(t, got, "error")
 }
 
 func TestSummaryOutputPublishSummary(t *testing.T) {
@@ -74,13 +106,13 @@ func TestSummaryOutputPublishSummary(t *testing.T) {
 		var buf bytes.Buffer
 		pub := &summaryOutput{writer: &buf}
 
-		err := pub.PublishSummary(Summary{
+		err := pub.PublishSummary(prober.Summary{
 			Total:    2,
 			Passed:   1,
 			Failed:   1,
 			Skipped:  0,
 			Duration: 1234 * time.Millisecond,
-			Results: []Result{
+			Results: []prober.Result{
 				{URL: "https://ok.example.com", Up: true, Status: 200},
 				{URL: "https://bad.example.com", Up: false, Status: 500, FailedAssertion: "status == 200"},
 			},
@@ -94,7 +126,7 @@ func TestSummaryOutputPublishSummary(t *testing.T) {
 	t.Run("returns writer errors", func(t *testing.T) {
 		pub := &summaryOutput{writer: failingWriter{}}
 
-		err := pub.PublishSummary(Summary{Duration: time.Second})
+		err := pub.PublishSummary(prober.Summary{Duration: time.Second})
 		assert.ErrorContains(t, err, "boom")
 	})
 }
@@ -103,17 +135,17 @@ func TestJUnitOutputPublishSummary(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "report.xml")
 	pub := &junitOutput{path: path}
 
-	err := pub.PublishSummary(Summary{
+	err := pub.PublishSummary(prober.Summary{
 		Total:    2,
 		Passed:   1,
 		Failed:   1,
 		Skipped:  1,
 		Duration: 1500 * time.Millisecond,
-		Results: []Result{
+		Results: []prober.Result{
 			{Name: "homepage", URL: "https://example.com", Up: true, Status: 200, LatencyMS: 15, Timestamp: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC), Body: "ok"},
 			{Name: "api", URL: "https://api.example.com", Up: false, Status: 500, LatencyMS: 35, FailedAssertion: "status == 200", Timestamp: time.Date(2026, 1, 2, 3, 4, 6, 0, time.UTC), Body: "failure"},
 		},
-		SkippedResults: []Result{{Name: "disabled-target", URL: "https://disabled.example.com", Timestamp: time.Date(2026, 1, 2, 3, 4, 4, 0, time.UTC)}},
+		SkippedResults: []prober.Result{{Name: "disabled-target", URL: "https://disabled.example.com", Timestamp: time.Date(2026, 1, 2, 3, 4, 4, 0, time.UTC)}},
 	})
 	require.NoError(t, err)
 
@@ -144,7 +176,7 @@ func TestJUnitOutputPublishSummary(t *testing.T) {
 }
 
 func TestStatsdPublishersSendGauges(t *testing.T) {
-	res := Result{URL: "https://example.com", Up: true, Status: 200, LatencyMS: 42, Tags: map[string]string{"environment": "prod", "team": "web"}}
+	res := prober.Result{URL: "https://example.com", Up: true, Status: 200, LatencyMS: 42, Tags: map[string]string{"environment": "prod", "team": "web"}}
 
 	t.Run("datadog", func(t *testing.T) {
 		conn, addr := listenUDP(t)
@@ -178,7 +210,7 @@ func TestStatsdPublishersPublishAfterCloseFails(t *testing.T) {
 			pub := newStatsdPublisher(t, name, addr)
 
 			require.NoError(t, pub.Close())
-			assert.Error(t, pub.Publish(Result{URL: "https://example.com", Up: true}))
+			assert.Error(t, pub.Publish(prober.Result{URL: "https://example.com", Up: true}))
 		})
 	}
 }
@@ -189,7 +221,7 @@ func TestStatsdPublishersReportSenderErrors(t *testing.T) {
 			_, addr := listenUDP(t)
 			pub := newStatsdPublisher(t, name, addr)
 
-			res := Result{URL: "https://example.com", Up: true}
+			res := prober.Result{URL: "https://example.com", Up: true}
 			refused, full := errors.New("connection refused"), errors.New("queue full")
 			sender := statsdSenderOf(t, pub)
 			sender.recordError(refused)
@@ -215,7 +247,7 @@ func TestStatsdPublishersCloseReportsBackgroundSendFailure(t *testing.T) {
 
 			// The aggregator may flush before Close, so the failure can
 			// surface from either call.
-			err := errors.Join(pub.Publish(Result{URL: "https://example.com", Up: true}), pub.Close())
+			err := errors.Join(pub.Publish(prober.Result{URL: "https://example.com", Up: true}), pub.Close())
 			assert.ErrorContains(t, err, "missing.sock")
 		})
 	}
@@ -226,12 +258,12 @@ func TestJUnitOutputWriteFailureReportedOnce(t *testing.T) {
 	require.NoError(t, os.WriteFile(parent, []byte("x"), 0o644))
 	pub := &junitOutput{path: filepath.Join(parent, "report.xml")}
 
-	assert.Error(t, pub.PublishSummary(Summary{Duration: time.Second}))
+	assert.Error(t, pub.PublishSummary(prober.Summary{Duration: time.Second}))
 	assert.NoError(t, pub.Close())
 
 	// The report path is a directory, so the final write fails.
 	pub = &junitOutput{path: t.TempDir()}
-	assert.Error(t, pub.PublishSummary(Summary{Duration: time.Second}))
+	assert.Error(t, pub.PublishSummary(prober.Summary{Duration: time.Second}))
 	assert.NoError(t, pub.Close())
 }
 
@@ -239,8 +271,8 @@ func TestStdoutPublisherPublish(t *testing.T) {
 	var buf bytes.Buffer
 	pub := &stdoutPublisher{logger: slog.New(slog.NewJSONHandler(&buf, nil))}
 
-	require.NoError(t, pub.Publish(Result{URL: "http://example.com", Up: true, Status: 200, LatencyMS: 10, Tags: map[string]string{"service": "web"}}))
-	require.NoError(t, pub.Publish(Result{URL: "http://example.com/down", Up: false, Status: 500, LatencyMS: 20, Error: "boom", FailedAssertion: "status == 200"}))
+	require.NoError(t, pub.Publish(prober.Result{URL: "http://example.com", Up: true, Status: 200, LatencyMS: 10, Tags: map[string]string{"service": "web"}}))
+	require.NoError(t, pub.Publish(prober.Result{URL: "http://example.com/down", Up: false, Status: 500, LatencyMS: 20, Error: "boom", FailedAssertion: "status == 200"}))
 
 	lines := bytes.Split(bytes.TrimSpace(buf.Bytes()), []byte("\n"))
 	require.Len(t, lines, 2)
@@ -286,7 +318,7 @@ func readDatagrams(t *testing.T, conn net.PacketConn) string {
 func newStatsdPublisher(t *testing.T, name Name, addr string) publisher {
 	t.Helper()
 	cfg := Config{Datadog: Setting{Value: addr}, GCP: Setting{Value: addr}}
-	pub, err := constructors[name](cfg)
+	pub, err := defaultConstructors[name](cfg)
 	require.NoError(t, err)
 	require.NotNil(t, pub)
 	return pub

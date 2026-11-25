@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"time"
+
+	"github.com/lnrdll/prober/internal/prober"
 )
 
 type filePublisher struct {
@@ -19,24 +21,26 @@ func newFilePublisher(cfg Config) (publisher, error) {
 }
 
 type fileLogSchema struct {
-	Timestamp string            `json:"time"`
-	URL       string            `json:"url"`
-	Up        bool              `json:"up"`
-	Status    int               `json:"status"`
-	LatencyMS int64             `json:"latency_ms"`
-	Tags      map[string]string `json:"tags,omitempty"`
-	Error     string            `json:"error,omitempty"`
+	Timestamp       string            `json:"time"`
+	URL             string            `json:"url"`
+	Up              bool              `json:"up"`
+	Status          int               `json:"status"`
+	LatencyMS       int64             `json:"latency_ms"`
+	Tags            map[string]string `json:"tags,omitempty"`
+	FailedAssertion string            `json:"failed_assertion,omitempty"`
+	Error           string            `json:"error,omitempty"`
 }
 
-func (p *filePublisher) Publish(res Result) error {
+func (p *filePublisher) Publish(res prober.Result) error {
 	bytes, err := json.Marshal(fileLogSchema{
-		Timestamp: res.Timestamp.Format(time.RFC3339),
-		URL:       res.URL,
-		Up:        res.Up,
-		Status:    res.Status,
-		LatencyMS: res.LatencyMS,
-		Tags:      res.Tags,
-		Error:     res.Error,
+		Timestamp:       res.Timestamp.Format(time.RFC3339),
+		URL:             res.URL,
+		Up:              res.Up,
+		Status:          res.Status,
+		LatencyMS:       res.LatencyMS,
+		Tags:            res.Tags,
+		FailedAssertion: res.FailedAssertion,
+		Error:           res.Error,
 	})
 	if err != nil {
 		return err
