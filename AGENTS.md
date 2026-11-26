@@ -94,7 +94,7 @@ When you edit this file, a skill or any document an agent reads: cache only what
 
 # This repository
 
-`prober` is a single-module Go CLI with `main.go` at the repository root, Cobra commands in `cmd`, and domain packages in `internal/config`, `internal/prober`, `internal/output`, and `internal/buildinfo`. It has no long-running dev server or background worker.
+`prober` is a single-module Go CLI with `main.go` at the repository root, Cobra commands in `cmd`, and domain packages in `internal/prober`, `internal/output`, and `internal/buildinfo`. It has no long-running dev server or background worker.
 
 ## Tooling and checks
 
@@ -113,7 +113,7 @@ When you edit this file, a skill or any document an agent reads: cache only what
 
 ## Testing
 
-- Package tests live beside the code in `cmd`, `internal/config`, `internal/prober`, and `internal/output` and use `github.com/stretchr/testify`.
+- Package tests live beside the code in `cmd`, `internal/prober`, and `internal/output` and use `github.com/stretchr/testify`.
 - Existing tests in `cmd` and `internal/output` that mutate process-wide state (`t.Chdir`, `internal/buildinfo` globals) must stay serial. `internal/output` tests inject fakes through unexported `openWith` rather than mutating globals. Isolate new CLI tests through `cmd.NewRootCmd` or `newRootCmd` with `SetOut` and `t.TempDir`.
 - `internal/prober.Execute` sleeps for a random stagger up to 1500 milliseconds per enabled target by default. Tests pass `prober.Runner{Jitter: func() time.Duration { return 0 }}` and optional `Transport` and `Now` fakes to test through `Runner.Execute` without real-time waits.
 

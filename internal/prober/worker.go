@@ -15,8 +15,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	"github.com/lnrdll/prober/internal/config"
 )
 
 const (
@@ -24,8 +22,6 @@ const (
 	DefaultMaxJitter = 1500 * time.Millisecond
 	// DefaultConcurrency is the default maximum number of simultaneous target probes.
 	DefaultConcurrency = 64
-
-	defaultTargetTimeoutSeconds = 60
 )
 
 var (
@@ -85,14 +81,14 @@ func (r Runner) Execute(ctx context.Context, plan Plan, publish func(Result)) Su
 
 	enabled := make([]preparedTarget, 0, len(plan.targets))
 	for _, target := range plan.targets {
-		if target.Disabled {
+		if target.disabled {
 			summary.Skipped++
 			summary.SkippedResults = append(summary.SkippedResults, Result{
-				Name:      target.Name,
-				URL:       target.URL,
-				Method:    target.Method,
+				Name:      target.name,
+				URL:       target.url,
+				Method:    target.method,
 				Timestamp: now(),
-				Tags:      target.Tags,
+				Tags:      target.tags,
 			})
 			continue
 		}
@@ -159,15 +155,15 @@ func (r Runner) buildClients() (secureClient, insecureClient *http.Client, clean
 		secureTransport := newBaseTransport(false)
 		insecureTransport := newBaseTransport(true)
 		return &http.Client{
-				CheckRedirect: noRedirect,
-				Transport:     secureTransport,
-			}, &http.Client{
-				CheckRedirect: noRedirect,
-				Transport:     insecureTransport,
-			}, func() {
-				secureTransport.CloseIdleConnections()
-				insecureTransport.CloseIdleConnections()
-			}
+			CheckRedirect: noRedirect,
+			Transport:     secureTransport,
+		}, &http.Client{
+			CheckRedirect: noRedirect,
+			Transport:     insecureTransport,
+		}, func() {
+			secureTransport.CloseIdleConnections()
+			insecureTransport.CloseIdleConnections()
+		}
 	}
 
 	secureClient = &http.Client{
@@ -225,22 +221,18 @@ func runTarget(
 	jitter func() time.Duration,
 ) Result {
 	if err := sleepContext(ctx, jitter()); err != nil {
-		method := t.Method
-		if method == "" {
-			method = http.MethodGet
-		}
 		return Result{
-			Name:      t.Name,
-			URL:       t.URL,
-			Method:    method,
+			Name:      t.name,
+			URL:       t.url,
+			Method:    t.method,
 			Timestamp: now(),
-			Tags:      t.Tags,
+			Tags:      t.tags,
 			Error:     err.Error(),
 		}
 	}
 
 	client := secureClient
-	if t.SSLSkipVerify {
+	if t.sslSkipVerify {
 		client = insecureClient
 	}
 	return probeTarget(ctx, t, client, now)
@@ -264,13 +256,8 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 }
 
 func probeTarget(ctx context.Context, t preparedTarget, client *http.Client, now func() time.Time) Result {
-	attempts := t.Retries + 1
-	if attempts < 1 {
-		attempts = 1
-	}
-
 	var lastResult Result
-	for attempt := 0; attempt < attempts; attempt++ {
+	for range t.attempts {
 		lastResult = probeTargetOnce(ctx, t, client, now)
 		if lastResult.Up {
 			return lastResult
@@ -288,32 +275,29 @@ func probeTarget(ctx context.Context, t preparedTarget, client *http.Client, now
 
 func probeTargetOnce(ctx context.Context, t preparedTarget, client *http.Client, now func() time.Time) Result {
 	res := Result{
-		Name:      t.Name,
-		URL:       t.URL,
-		Method:    t.Method,
+		Name:      t.name,
+		URL:       t.url,
+		Method:    t.method,
 		Timestamp: now(),
-		Tags:      t.Tags,
-	}
-	if res.Method == "" {
-		res.Method = http.MethodGet
+		Tags:      t.tags,
 	}
 
-	if isBlockedMetadataHost(t.URL) {
+	if isBlockedMetadataHost(t.parsedURL) {
 		res.Error = errSSRFBlocked.Error()
 		return res
 	}
 
-	reqCtx, cancel := context.WithTimeout(ctx, targetTimeout(t.Target))
+	reqCtx, cancel := context.WithTimeout(ctx, t.timeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(reqCtx, res.Method, t.URL, bytes.NewBufferString(t.Body))
+	req, err := http.NewRequestWithContext(reqCtx, t.method, t.url, bytes.NewBufferString(t.body))
 	if err != nil {
 		res.Error = err.Error()
 		return res
 	}
 	req.Header.Set("User-Agent", "prober")
 
-	for k, v := range t.Headers {
+	for k, v := range t.headers {
 		req.Header.Set(k, v)
 	}
 
@@ -406,9 +390,8 @@ func probeTargetOnce(ctx context.Context, t preparedTarget, client *http.Client,
 	return res
 }
 
-func isBlockedMetadataHost(rawURL string) bool {
-	parsedURL, err := url.Parse(rawURL)
-	if err != nil {
+func isBlockedMetadataHost(parsedURL *url.URL) bool {
+	if parsedURL == nil {
 		return false
 	}
 	host := strings.TrimSuffix(strings.ToLower(parsedURL.Hostname()), ".")
@@ -450,13 +433,5 @@ func extractServerName(host string) string {
 }
 
 func isNonRetryableProbeError(errMsg string) bool {
-	return strings.Contains(errMsg, "SSRF Alert") || strings.Contains(errMsg, "missing protocol scheme")
-}
-
-func targetTimeout(t config.Target) time.Duration {
-	if t.Timeout <= 0 {
-		return defaultTargetTimeoutSeconds * time.Second
-	}
-
-	return time.Duration(t.Timeout) * time.Second
+	return strings.Contains(errMsg, "SSRF Alert")
 }

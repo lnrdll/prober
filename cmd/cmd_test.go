@@ -284,33 +284,6 @@ func runWithUnwritableJUnit(t *testing.T, failOnTargets bool) (string, error) {
 	return executeRoot(t, args...)
 }
 
-func TestLoadConfig(t *testing.T) {
-	t.Run("success", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "config.yaml")
-		require.NoError(t, os.WriteFile(path, []byte("targets:\n  - name: test\n    url: http://example.com\n    timeout: 15\n"), 0644))
-
-		cfg, err := loadConfig(path)
-		require.NoError(t, err)
-		require.Len(t, cfg.Targets, 1)
-		assert.Equal(t, "test", cfg.Targets[0].Name)
-		assert.Equal(t, "http://example.com", cfg.Targets[0].URL)
-		assert.Equal(t, 15, cfg.Targets[0].Timeout)
-	})
-
-	t.Run("missing file", func(t *testing.T) {
-		_, err := loadConfig(filepath.Join(t.TempDir(), "missing.yaml"))
-		assert.ErrorContains(t, err, "read config")
-	})
-
-	t.Run("invalid yaml", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "invalid.yaml")
-		require.NoError(t, os.WriteFile(path, []byte("targets: ["), 0644))
-
-		_, err := loadConfig(path)
-		assert.ErrorContains(t, err, "parse config")
-	})
-}
-
 func TestAddConfigFlag(t *testing.T) {
 	cmd := &cobra.Command{RunE: func(cmd *cobra.Command, args []string) error { return nil }}
 	var configPath string
@@ -353,8 +326,19 @@ func TestRunAndLintRejectSameManifests(t *testing.T) {
 	tests := []struct {
 		name     string
 		manifest string
+		missing  bool
 		expected string
 	}{
+		{
+			name:     "missing manifest",
+			missing:  true,
+			expected: `^read config ".+missing\.yaml": `,
+		},
+		{
+			name:     "malformed YAML",
+			manifest: "targets: [",
+			expected: `^parse config ".+targets\.yaml": `,
+		},
 		{
 			name:     "structurally invalid manifest",
 			manifest: "targets:\n  - name: test\n    url: " + server.URL + "\n    method: get\n",
@@ -375,7 +359,11 @@ func TestRunAndLintRejectSameManifests(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "targets.yaml")
-			require.NoError(t, os.WriteFile(path, []byte(tt.manifest), 0644))
+			if tt.missing {
+				path = filepath.Join(t.TempDir(), "missing.yaml")
+			} else {
+				require.NoError(t, os.WriteFile(path, []byte(tt.manifest), 0644))
+			}
 
 			runOut, runErr := executeRoot(t, "run", "-c", path, "-o", "summary")
 			lintOut, lintErr := executeRoot(t, "lint", "-c", path)

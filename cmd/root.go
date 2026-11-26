@@ -21,3 +21,8 @@ func newRootCmd(runner prober.Runner) *cobra.Command {
 	root.AddCommand(newRunCmd(runner), newLintCmd(), newVersionCmd())
 	return root
 }
+
+func addConfigFlag(command *cobra.Command, target *string) {
+	command.Flags().StringVarP(target, "config", "c", "", "Path to the target manifest YAML file")
+	_ = command.MarkFlagRequired("config")
+}

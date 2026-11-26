@@ -17,16 +17,11 @@ func newLintCmd() *cobra.Command {
 		Use:   "lint",
 		Short: "Validate manifest structure and CEL assertions.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := loadConfig(opts.configPath)
-			if err != nil {
+			if _, err := prober.Prepare(opts.configPath); err != nil {
 				return err
 			}
 
-			if _, err := prober.Prepare(cfg); err != nil {
-				return err
-			}
-
-			_, err = fmt.Fprintln(cmd.OutOrStdout(), "Configuration schema and CEL expressions are valid.")
+			_, err := fmt.Fprintln(cmd.OutOrStdout(), "Configuration schema and CEL expressions are valid.")
 			return err
 		},
 	}

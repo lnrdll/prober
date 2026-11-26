@@ -26,11 +26,7 @@ func newRunCmd(runner prober.Runner) *cobra.Command {
 		Use:   "run",
 		Short: "Run probes from a target manifest.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := loadConfig(opts.configPath)
-			if err != nil {
-				return err
-			}
-			plan, err := prober.Prepare(cfg)
+			plan, err := prober.Prepare(opts.configPath)
 			if err != nil {
 				return err
 			}
