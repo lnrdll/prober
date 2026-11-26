@@ -2,36 +2,56 @@ package output
 
 import (
 	"fmt"
-	"slices"
 	"strings"
 )
 
 type Name string
 
-const (
-	DefaultFilePath   = "prober.log"
-	DefaultJUnitPath  = "prober.xml"
-	DefaultStatsDAddr = "127.0.0.1:8125"
-
-	OutputSummary       Name = "summary"
-	OutputJunit         Name = "junit"
-	OutputStdout        Name = "stdout"
-	OutputFile          Name = "file"
-	OutputStatsdDatadog Name = "statsd-datadog"
-	OutputStatsdGCP     Name = "statsd-gcp"
-)
-
-var orderedNames = []Name{
-	OutputSummary,
-	OutputJunit,
-	OutputStdout,
-	OutputFile,
-	OutputStatsdDatadog,
-	OutputStatsdGCP,
+// SettingDescriptor describes a configurable output's setting metadata.
+type SettingDescriptor struct {
+	Name        Name
+	Default     string
+	Description string
 }
 
+const (
+	defaultFilePath   = "prober.log"
+	defaultJUnitPath  = "prober.xml"
+	defaultStatsDAddr = "127.0.0.1:8125"
+
+	outputSummary       Name = "summary"
+	outputJunit         Name = "junit"
+	outputStdout        Name = "stdout"
+	outputFile          Name = "file"
+	outputStatsdDatadog Name = "statsd-datadog"
+	outputStatsdGCP     Name = "statsd-gcp"
+)
+
 func Names() []Name {
-	return append([]Name(nil), orderedNames...)
+	names := make([]Name, 0, len(catalog))
+	for _, entry := range catalog {
+		names = append(names, entry.name)
+	}
+	return names
+}
+
+func SettingDescriptors() []SettingDescriptor {
+	descriptors := make([]SettingDescriptor, 0, len(catalog))
+	for _, entry := range catalog {
+		if entry.setting == nil {
+			continue
+		}
+		descriptors = append(descriptors, SettingDescriptor{
+			Name:        entry.name,
+			Default:     entry.setting.defaultValue,
+			Description: entry.setting.description,
+		})
+	}
+	return descriptors
+}
+
+func invalidOutputError(value string) error {
+	return fmt.Errorf("invalid output %q (allowed: %s)", value, JoinNames(Names()))
 }
 
 func parseSelections(raw []string) ([]Name, error) {
@@ -43,8 +63,8 @@ func parseSelections(raw []string) ([]Name, error) {
 	seen := make(map[Name]struct{}, len(raw))
 	for _, value := range raw {
 		name := Name(strings.TrimSpace(value))
-		if !slices.Contains(orderedNames, name) {
-			return nil, fmt.Errorf("invalid output %q (allowed: %s)", value, JoinNames(orderedNames))
+		if _, ok := findCatalogEntry(name); !ok {
+			return nil, invalidOutputError(value)
 		}
 		if _, ok := seen[name]; ok {
 			continue

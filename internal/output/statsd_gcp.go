@@ -11,7 +11,7 @@ type gcpPublisher struct {
 }
 
 func newGCPPublisher(cfg Config) (publisher, error) {
-	sender, err := newStatsdSender(cfg.GCP.Value)
+	sender, err := newStatsdSender(cfg.Settings[outputStatsdGCP].Value)
 	if err != nil {
 		return nil, err
 	}

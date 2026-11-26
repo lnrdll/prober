@@ -14,14 +14,14 @@ type runOptions struct {
 	configPath          string
 	failOnTargetFailure bool
 	outputs             []string
-	filePath            string
-	junitPath           string
-	datadogAddr         string
-	gcpAddr             string
+	settings            map[output.Name]*string
 }
 
 func newRunCmd(runner prober.Runner) *cobra.Command {
-	opts := &runOptions{}
+	descriptors := output.SettingDescriptors()
+	opts := &runOptions{
+		settings: make(map[output.Name]*string, len(descriptors)),
+	}
 	runCmd := &cobra.Command{
 		Use:   "run",
 		Short: "Run probes from a target manifest.",
@@ -35,16 +35,17 @@ func newRunCmd(runner prober.Runner) *cobra.Command {
 				return err
 			}
 
-			setting := func(name output.Name, value string) output.Setting {
-				return output.Setting{Value: value, Set: cmd.Flags().Changed(string(name))}
+			settings := make(map[output.Name]output.Setting, len(descriptors))
+			for _, d := range descriptors {
+				settings[d.Name] = output.Setting{
+					Value: *opts.settings[d.Name],
+					Set:   cmd.Flags().Changed(string(d.Name)),
+				}
 			}
 			outputs, err := output.Open(output.Config{
 				Selections: opts.outputs,
 				Writer:     cmd.OutOrStdout(),
-				File:       setting(output.OutputFile, opts.filePath),
-				JUnit:      setting(output.OutputJunit, opts.junitPath),
-				Datadog:    setting(output.OutputStatsdDatadog, opts.datadogAddr),
-				GCP:        setting(output.OutputStatsdGCP, opts.gcpAddr),
+				Settings:   settings,
 			})
 			if err != nil {
 				return formatOutputOpenError(err)
@@ -65,10 +66,11 @@ func newRunCmd(runner prober.Runner) *cobra.Command {
 	addConfigFlag(runCmd, &opts.configPath)
 	runCmd.Flags().BoolVar(&opts.failOnTargetFailure, "fail-on-target-failure", false, "Exit non-zero when any target fails")
 	runCmd.Flags().StringArrayVarP(&opts.outputs, "output", "o", nil, "Enable an output backend (repeatable): "+output.JoinNames(output.Names()))
-	runCmd.Flags().StringVar(&opts.filePath, string(output.OutputFile), output.DefaultFilePath, "Append structured JSON log lines to a file")
-	runCmd.Flags().StringVar(&opts.junitPath, string(output.OutputJunit), output.DefaultJUnitPath, "Write a JUnit XML report to a file")
-	runCmd.Flags().StringVar(&opts.datadogAddr, string(output.OutputStatsdDatadog), output.DefaultStatsDAddr, "UDP network address location pointing to local Datadog daemon")
-	runCmd.Flags().StringVar(&opts.gcpAddr, string(output.OutputStatsdGCP), output.DefaultStatsDAddr, "UDP network address location pointing to local GCP Ops Agent")
+	for _, d := range descriptors {
+		var value string
+		opts.settings[d.Name] = &value
+		runCmd.Flags().StringVar(&value, string(d.Name), d.Default, d.Description)
+	}
 	return runCmd
 }
 

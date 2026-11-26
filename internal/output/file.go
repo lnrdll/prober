@@ -13,7 +13,7 @@ type filePublisher struct {
 }
 
 func newFilePublisher(cfg Config) (publisher, error) {
-	f, err := os.OpenFile(cfg.File.Value, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(cfg.Settings[outputFile].Value, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return nil, err
 	}

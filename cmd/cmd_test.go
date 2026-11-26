@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lnrdll/prober/internal/output"
 	"github.com/lnrdll/prober/internal/prober"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
@@ -135,8 +134,7 @@ func TestRunCmd(t *testing.T) {
 		path := writeManifest(t, server.URL, manifestTarget{name: "passing"})
 
 		_, err := executeRoot(t, "run", "-c", path, "-o", "unknown")
-		assert.ErrorContains(t, err, "invalid output")
-		assert.ErrorContains(t, err, string(output.OutputStdout))
+		assert.EqualError(t, err, `invalid output "unknown" (allowed: summary, junit, stdout, file, statsd-datadog, statsd-gcp)`)
 	})
 
 	t.Run("uses default file config when output is selected", func(t *testing.T) {
@@ -145,7 +143,7 @@ func TestRunCmd(t *testing.T) {
 
 		_, err := executeRoot(t, "run", "-c", path, "-o", "file")
 		require.NoError(t, err)
-		_, statErr := os.Stat(output.DefaultFilePath)
+		_, statErr := os.Stat("prober.log")
 		require.NoError(t, statErr)
 	})
 
@@ -155,7 +153,7 @@ func TestRunCmd(t *testing.T) {
 
 		_, err := executeRoot(t, "run", "-c", path, "-o", "junit")
 		require.NoError(t, err)
-		_, statErr := os.Stat(output.DefaultJUnitPath)
+		_, statErr := os.Stat("prober.xml")
 		require.NoError(t, statErr)
 	})
 
@@ -163,24 +161,67 @@ func TestRunCmd(t *testing.T) {
 		path := writeManifest(t, server.URL, manifestTarget{name: "passing"})
 
 		_, err := executeRoot(t, "run", "-c", path, "--file", filepath.Join(t.TempDir(), "prober.log"))
-		assert.ErrorContains(t, err, "--file requires -o file")
+		assert.EqualError(t, err, "--file requires -o file")
+
+		_, err = executeRoot(t, "run", "-c", path, "--statsd-datadog", "127.0.0.1:9125")
+		assert.EqualError(t, err, "--statsd-datadog requires -o statsd-datadog")
 	})
 
 	t.Run("rejects empty output setting when output is selected", func(t *testing.T) {
 		path := writeManifest(t, server.URL, manifestTarget{name: "passing"})
 
 		_, err := executeRoot(t, "run", "-c", path, "-o", "junit", "--junit", "")
-		assert.ErrorContains(t, err, "--junit is required when -o junit is set")
+		assert.EqualError(t, err, "--junit is required when -o junit is set")
+
+		_, err = executeRoot(t, "run", "-c", path, "-o", "statsd-gcp", "--statsd-gcp", "")
+		assert.EqualError(t, err, "--statsd-gcp is required when -o statsd-gcp is set")
 	})
 
-	t.Run("flag defaults are exposed in help metadata", func(t *testing.T) {
+	t.Run("flag names, defaults, and descriptions are exposed in help metadata", func(t *testing.T) {
 		runCmd, _, err := NewRootCmd().Find([]string{"run"})
 		require.NoError(t, err)
-		assert.Equal(t, output.DefaultFilePath, runCmd.Flags().Lookup(string(output.OutputFile)).DefValue)
-		assert.Equal(t, output.DefaultJUnitPath, runCmd.Flags().Lookup(string(output.OutputJunit)).DefValue)
-		assert.Equal(t, output.DefaultStatsDAddr, runCmd.Flags().Lookup(string(output.OutputStatsdDatadog)).DefValue)
-		assert.Equal(t, output.DefaultStatsDAddr, runCmd.Flags().Lookup(string(output.OutputStatsdGCP)).DefValue)
-		assert.Equal(t, "false", runCmd.Flags().Lookup("fail-on-target-failure").DefValue)
+
+		outputFlag := runCmd.Flags().Lookup("output")
+		require.NotNil(t, outputFlag)
+		assert.Equal(t, "o", outputFlag.Shorthand)
+		assert.Equal(t, "Enable an output backend (repeatable): summary, junit, stdout, file, statsd-datadog, statsd-gcp", outputFlag.Usage)
+
+		expectedFlags := []struct {
+			name        string
+			defValue    string
+			description string
+		}{
+			{
+				name:        "file",
+				defValue:    "prober.log",
+				description: "Append structured JSON log lines to a file",
+			},
+			{
+				name:        "junit",
+				defValue:    "prober.xml",
+				description: "Write a JUnit XML report to a file",
+			},
+			{
+				name:        "statsd-datadog",
+				defValue:    "127.0.0.1:8125",
+				description: "UDP network address location pointing to local Datadog daemon",
+			},
+			{
+				name:        "statsd-gcp",
+				defValue:    "127.0.0.1:8125",
+				description: "UDP network address location pointing to local GCP Ops Agent",
+			},
+		}
+		for _, tc := range expectedFlags {
+			flag := runCmd.Flags().Lookup(tc.name)
+			require.NotNil(t, flag, "missing flag --%s", tc.name)
+			assert.Equal(t, tc.defValue, flag.DefValue)
+			assert.Equal(t, tc.description, flag.Usage)
+		}
+
+		failFlag := runCmd.Flags().Lookup("fail-on-target-failure")
+		require.NotNil(t, failFlag)
+		assert.Equal(t, "false", failFlag.DefValue)
 	})
 
 	t.Run("repeated invocations share no configuration", func(t *testing.T) {
@@ -198,6 +239,17 @@ func TestRunCmd(t *testing.T) {
 		assert.Empty(t, out)
 		assert.NoFileExists(t, reportPath)
 		assert.FileExists(t, filePath)
+
+		first, _, err := NewRootCmd().Find([]string{"run"})
+		require.NoError(t, err)
+		require.NoError(t, first.ParseFlags([]string{"--file", filePath}))
+		assert.True(t, first.Flags().Changed("file"))
+		assert.Equal(t, filePath, first.Flags().Lookup("file").Value.String())
+
+		second, _, err := NewRootCmd().Find([]string{"run"})
+		require.NoError(t, err)
+		assert.False(t, second.Flags().Changed("file"))
+		assert.Equal(t, "prober.log", second.Flags().Lookup("file").Value.String())
 	})
 }
 

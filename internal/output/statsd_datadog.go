@@ -12,7 +12,7 @@ type datadogPublisher struct {
 }
 
 func newDatadogPublisher(cfg Config) (publisher, error) {
-	sender, err := newStatsdSender(cfg.Datadog.Value, statsd.WithNamespace("custom_monitoring."))
+	sender, err := newStatsdSender(cfg.Settings[outputStatsdDatadog].Value, statsd.WithNamespace("custom_monitoring."))
 	if err != nil {
 		return nil, err
 	}
