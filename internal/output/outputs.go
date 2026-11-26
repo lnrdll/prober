@@ -22,11 +22,9 @@ type Config struct {
 	// Selections holds the raw -o values.
 	Selections []string
 	// Writer receives stdout JSON lines and the summary. Nil means os.Stdout.
-	Writer  io.Writer
-	File    Setting
-	JUnit   Setting
-	Datadog Setting
-	GCP     Setting
+	Writer io.Writer
+	// Settings holds optional per-output settings keyed by output name.
+	Settings map[Name]Setting
 }
 
 type publisher interface {
@@ -40,15 +38,68 @@ type summaryPublisher interface {
 
 type constructorFunc func(cfg Config) (publisher, error)
 
-// defaultConstructors builds each adapter from a Config whose settings already
-// hold their defaults.
-var defaultConstructors = map[Name]constructorFunc{
-	OutputSummary:       newSummaryOutput,
-	OutputJunit:         newJUnitOutput,
-	OutputStdout:        newStdoutPublisher,
-	OutputFile:          newFilePublisher,
-	OutputStatsdDatadog: newDatadogPublisher,
-	OutputStatsdGCP:     newGCPPublisher,
+type settingSpec struct {
+	defaultValue string
+	description  string
+}
+
+type catalogEntry struct {
+	name      Name
+	construct constructorFunc
+	setting   *settingSpec
+}
+
+// catalog is the single ordered registry for all built-in outputs.
+var catalog = []catalogEntry{
+	{
+		name:      outputSummary,
+		construct: newSummaryOutput,
+	},
+	{
+		name:      outputJunit,
+		construct: newJUnitOutput,
+		setting: &settingSpec{
+			defaultValue: defaultJUnitPath,
+			description:  "Write a JUnit XML report to a file",
+		},
+	},
+	{
+		name:      outputStdout,
+		construct: newStdoutPublisher,
+	},
+	{
+		name:      outputFile,
+		construct: newFilePublisher,
+		setting: &settingSpec{
+			defaultValue: defaultFilePath,
+			description:  "Append structured JSON log lines to a file",
+		},
+	},
+	{
+		name:      outputStatsdDatadog,
+		construct: newDatadogPublisher,
+		setting: &settingSpec{
+			defaultValue: defaultStatsDAddr,
+			description:  "UDP network address location pointing to local Datadog daemon",
+		},
+	},
+	{
+		name:      outputStatsdGCP,
+		construct: newGCPPublisher,
+		setting: &settingSpec{
+			defaultValue: defaultStatsDAddr,
+			description:  "UDP network address location pointing to local GCP Ops Agent",
+		},
+	},
+}
+
+func findCatalogEntry(name Name) (catalogEntry, bool) {
+	for _, entry := range catalog {
+		if entry.name == name {
+			return entry, true
+		}
+	}
+	return catalogEntry{}, false
 }
 
 // Outputs publishes results to every started adapter and keeps their failures
@@ -67,10 +118,10 @@ type namedPublisher struct {
 // output, or stdout alone when nothing is selected. If an output fails to
 // start, Open closes the ones it already started and reports both.
 func Open(cfg Config) (*Outputs, error) {
-	return openWith(cfg, defaultConstructors)
+	return openWith(cfg, nil)
 }
 
-func openWith(cfg Config, builders map[Name]constructorFunc) (*Outputs, error) {
+func openWith(cfg Config, overrides map[Name]constructorFunc) (*Outputs, error) {
 	selected, err := parseSelections(cfg.Selections)
 	if err != nil {
 		return nil, err
@@ -82,12 +133,17 @@ func openWith(cfg Config, builders map[Name]constructorFunc) (*Outputs, error) {
 		cfg.Writer = os.Stdout
 	}
 	if len(selected) == 0 {
-		selected = []Name{OutputStdout}
+		selected = []Name{outputStdout}
 	}
 
 	o := &Outputs{failures: newFailures(selected)}
 	for _, name := range selected {
-		pub, err := builders[name](cfg)
+		construct := overrides[name]
+		if construct == nil {
+			entry, _ := findCatalogEntry(name)
+			construct = entry.construct
+		}
+		pub, err := construct(cfg)
 		if err != nil {
 			o.failures.record(name, opInit, err)
 			o.closeAll()
@@ -150,30 +206,44 @@ func (e EmptySettingError) Error() string {
 	return fmt.Sprintf("setting for output %q cannot be empty", e.Output)
 }
 
-// applySettings checks each output's setting against the selection and fills
+// applySettings validates Config.Settings without mutating the caller's map,
+// checks each configurable output's setting against the selection, and fills
 // in the default for a selected output whose setting is unset and empty.
 func applySettings(cfg Config, selected []Name) (Config, error) {
-	settings := []struct {
-		name     Name
-		setting  *Setting
-		fallback string
-	}{
-		{OutputJunit, &cfg.JUnit, DefaultJUnitPath},
-		{OutputFile, &cfg.File, DefaultFilePath},
-		{OutputStatsdDatadog, &cfg.Datadog, DefaultStatsDAddr},
-		{OutputStatsdGCP, &cfg.GCP, DefaultStatsDAddr},
-	}
-	for _, s := range settings {
-		isSelected := slices.Contains(selected, s.name)
-		switch {
-		case !isSelected && s.setting.Set:
-			return Config{}, UnselectedSettingError{Output: s.name}
-		case isSelected && s.setting.Value == "" && !s.setting.Set:
-			s.setting.Value = s.fallback
-		case isSelected && s.setting.Value == "":
-			return Config{}, EmptySettingError{Output: s.name}
+	var invalid []Name
+	for name := range cfg.Settings {
+		entry, ok := findCatalogEntry(name)
+		if !ok || entry.setting == nil {
+			invalid = append(invalid, name)
 		}
 	}
+	if len(invalid) > 0 {
+		slices.Sort(invalid)
+		name := invalid[0]
+		if _, ok := findCatalogEntry(name); !ok {
+			return Config{}, invalidOutputError(string(name))
+		}
+		return Config{}, fmt.Errorf("output %q takes no setting", name)
+	}
+
+	resolved := make(map[Name]Setting, len(cfg.Settings))
+	for _, entry := range catalog {
+		if entry.setting == nil {
+			continue
+		}
+		s := cfg.Settings[entry.name]
+		isSelected := slices.Contains(selected, entry.name)
+		switch {
+		case !isSelected && s.Set:
+			return Config{}, UnselectedSettingError{Output: entry.name}
+		case isSelected && s.Value == "" && !s.Set:
+			s.Value = entry.setting.defaultValue
+		case isSelected && s.Value == "":
+			return Config{}, EmptySettingError{Output: entry.name}
+		}
+		resolved[entry.name] = s
+	}
+	cfg.Settings = resolved
 	return cfg, nil
 }
 

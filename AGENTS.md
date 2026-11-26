@@ -108,7 +108,7 @@ When you edit this file, a skill or any document an agent reads: cache only what
 
 - `cmd.NewRootCmd` constructs a fresh Cobra command tree with local option structs on each call so CLI invocations share no flag state. Keep command flag state inside command constructors rather than package globals.
 - `internal/prober` owns `Result`, `Summary`, `Plan`, `Prepare`, `Runner`, and `Execute`. `Runner.Execute` accepts `context.Context`, a `Plan`, and a `publish func(prober.Result)` callback called sequentially from the calling goroutine as probes finish, so `internal/prober` has no dependency on `internal/output`.
-- `internal/output.Open` owns selection validation, default settings, adapter startup, partial-init cleanup, and grouped failure reporting through `Outputs.Finish`. Register new output backends in `internal/output/names.go` and `internal/output/outputs.go`. `internal/output` returns typed errors (`UnselectedSettingError`, `EmptySettingError`) that `cmd/run.go` translates into CLI flag messages.
+- `internal/output.Open` owns selection validation, default settings, adapter startup, partial-init cleanup, and grouped failure reporting through `Outputs.Finish`. Register new output backends in the `catalog` slice in `internal/output/outputs.go`. `internal/output` returns typed errors (`UnselectedSettingError`, `EmptySettingError`) that `cmd/run.go` translates into CLI flag messages.
 - Both `cmd/run.go` and `cmd/lint.go` run target preparation through `prober.Prepare`.
 
 ## Testing

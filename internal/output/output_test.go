@@ -21,19 +21,19 @@ func TestParseSelections(t *testing.T) {
 	t.Run("deduplicates while preserving order", func(t *testing.T) {
 		selected, err := parseSelections([]string{"file", "stdout", "file"})
 		require.NoError(t, err)
-		assert.Equal(t, []Name{OutputFile, OutputStdout}, selected)
+		assert.Equal(t, []Name{outputFile, outputStdout}, selected)
 	})
 
 	t.Run("trims whitespace", func(t *testing.T) {
 		selected, err := parseSelections([]string{" file ", " stdout "})
 		require.NoError(t, err)
-		assert.Equal(t, []Name{OutputFile, OutputStdout}, selected)
+		assert.Equal(t, []Name{outputFile, outputStdout}, selected)
 	})
 
 	t.Run("rejects unknown output", func(t *testing.T) {
 		_, err := parseSelections([]string{"unknown"})
 		assert.ErrorContains(t, err, "invalid output")
-		assert.ErrorContains(t, err, string(OutputStdout))
+		assert.ErrorContains(t, err, string(outputStdout))
 	})
 }
 
@@ -180,7 +180,7 @@ func TestStatsdPublishersSendGauges(t *testing.T) {
 
 	t.Run("datadog", func(t *testing.T) {
 		conn, addr := listenUDP(t)
-		pub := newStatsdPublisher(t, OutputStatsdDatadog, addr)
+		pub := newStatsdPublisher(t, outputStatsdDatadog, addr)
 
 		require.NoError(t, pub.Publish(res))
 		require.NoError(t, pub.Close())
@@ -192,7 +192,7 @@ func TestStatsdPublishersSendGauges(t *testing.T) {
 
 	t.Run("gcp", func(t *testing.T) {
 		conn, addr := listenUDP(t)
-		pub := newStatsdPublisher(t, OutputStatsdGCP, addr)
+		pub := newStatsdPublisher(t, outputStatsdGCP, addr)
 
 		require.NoError(t, pub.Publish(res))
 		require.NoError(t, pub.Close())
@@ -204,7 +204,7 @@ func TestStatsdPublishersSendGauges(t *testing.T) {
 }
 
 func TestStatsdPublishersPublishAfterCloseFails(t *testing.T) {
-	for _, name := range []Name{OutputStatsdDatadog, OutputStatsdGCP} {
+	for _, name := range []Name{outputStatsdDatadog, outputStatsdGCP} {
 		t.Run(string(name), func(t *testing.T) {
 			_, addr := listenUDP(t)
 			pub := newStatsdPublisher(t, name, addr)
@@ -216,7 +216,7 @@ func TestStatsdPublishersPublishAfterCloseFails(t *testing.T) {
 }
 
 func TestStatsdPublishersReportSenderErrors(t *testing.T) {
-	for _, name := range []Name{OutputStatsdDatadog, OutputStatsdGCP} {
+	for _, name := range []Name{outputStatsdDatadog, outputStatsdGCP} {
 		t.Run(string(name), func(t *testing.T) {
 			_, addr := listenUDP(t)
 			pub := newStatsdPublisher(t, name, addr)
@@ -239,7 +239,7 @@ func TestStatsdPublishersReportSenderErrors(t *testing.T) {
 }
 
 func TestStatsdPublishersCloseReportsBackgroundSendFailure(t *testing.T) {
-	for _, name := range []Name{OutputStatsdDatadog, OutputStatsdGCP} {
+	for _, name := range []Name{outputStatsdDatadog, outputStatsdGCP} {
 		t.Run(string(name), func(t *testing.T) {
 			// Nothing listens on this socket, so every background write fails.
 			addr := "unix://" + filepath.Join(t.TempDir(), "missing.sock")
@@ -317,8 +317,10 @@ func readDatagrams(t *testing.T, conn net.PacketConn) string {
 
 func newStatsdPublisher(t *testing.T, name Name, addr string) publisher {
 	t.Helper()
-	cfg := Config{Datadog: Setting{Value: addr}, GCP: Setting{Value: addr}}
-	pub, err := defaultConstructors[name](cfg)
+	entry, ok := findCatalogEntry(name)
+	require.True(t, ok, "unknown output %q", name)
+	cfg := Config{Settings: map[Name]Setting{name: {Value: addr}}}
+	pub, err := entry.construct(cfg)
 	require.NoError(t, err)
 	require.NotNil(t, pub)
 	return pub

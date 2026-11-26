@@ -45,7 +45,7 @@ type junitSkipped struct {
 }
 
 func newJUnitOutput(cfg Config) (publisher, error) {
-	return &junitOutput{path: cfg.JUnit.Value}, nil
+	return &junitOutput{path: cfg.Settings[outputJunit].Value}, nil
 }
 
 func (j *junitOutput) Publish(prober.Result) error { return nil }
