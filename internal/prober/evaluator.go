@@ -13,17 +13,6 @@ type assertion struct {
 	program cel.Program
 }
 
-type evalContext struct {
-	Status      int
-	Body        string
-	LatencyMS   int64
-	SSLDaysLeft int
-	SSLIssuer   string
-	SSLSubject  string
-	SSLDNSNames string
-	Headers     map[string]string
-}
-
 // newCELEnv declares the variables an assertion can read.
 func newCELEnv() (*cel.Env, error) {
 	return cel.NewEnv(
@@ -38,17 +27,17 @@ func newCELEnv() (*cel.Env, error) {
 	)
 }
 
-// evaluate runs the assertion's program against data fields in memory.
-func (a assertion) evaluate(ctx evalContext) (bool, error) {
+// evaluate runs the assertion's program against a probe result.
+func (a assertion) evaluate(res Result) (bool, error) {
 	input := map[string]any{
-		"status":        int64(ctx.Status),
-		"body":          ctx.Body,
-		"latency_ms":    ctx.LatencyMS,
-		"ssl_days_left": int64(ctx.SSLDaysLeft),
-		"ssl_issuer":    ctx.SSLIssuer,
-		"ssl_subject":   ctx.SSLSubject,
-		"ssl_dns_names": ctx.SSLDNSNames,
-		"headers":       ctx.Headers,
+		"status":        int64(res.Status),
+		"body":          res.Body,
+		"latency_ms":    res.LatencyMS,
+		"ssl_days_left": int64(res.SSLDaysLeft),
+		"ssl_issuer":    res.SSLIssuer,
+		"ssl_subject":   res.SSLSubject,
+		"ssl_dns_names": res.SSLDNSNames,
+		"headers":       res.Headers,
 	}
 
 	out, _, err := a.program.Eval(input)

@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -214,6 +217,243 @@ func TestProbeTarget(t *testing.T) {
 		}
 	})
 
+	t.Run("stops retrying on wrapped errSSRFBlocked but retries errors mentioning SSRF Alert", func(t *testing.T) {
+		t.Parallel()
+
+		t.Run("wrapped errSSRFBlocked stops after first attempt", func(t *testing.T) {
+			t.Parallel()
+			var attempts atomic.Int32
+			runner := Runner{
+				Jitter: zeroJitter,
+				Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+					attempts.Add(1)
+					return nil, fmt.Errorf("dial blocked: %w", errSSRFBlocked)
+				}),
+			}
+
+			result := runManifest(t, runner, `targets:
+  - name: test
+    url: http://example.com
+    retries: 2
+`)
+			assert.False(t, result.Up)
+			assert.Equal(t, errSSRFBlocked.Error(), result.Error)
+			assert.Equal(t, int32(1), attempts.Load())
+		})
+
+		t.Run("unrelated error containing SSRF Alert still retries all attempts", func(t *testing.T) {
+			t.Parallel()
+			var attempts atomic.Int32
+			runner := Runner{
+				Jitter: zeroJitter,
+				Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+					attempts.Add(1)
+					return nil, errors.New("upstream proxy: SSRF Alert banner")
+				}),
+			}
+
+			result := runManifest(t, runner, `targets:
+  - name: test
+    url: http://example.com
+    retries: 2
+`)
+			assert.False(t, result.Up)
+			assert.Contains(t, result.Error, "upstream proxy: SSRF Alert banner")
+			assert.Equal(t, int32(3), attempts.Load())
+		})
+	})
+
+	t.Run("enforces dial-time SSRF protection across resolved IPs", func(t *testing.T) {
+		t.Parallel()
+
+		blockedIPs := []string{
+			"169.254.169.254",
+			"::ffff:169.254.169.254",
+			"fd00:ec2::254",
+			"169.254.170.2",
+			"100.100.100.200",
+		}
+		for _, ip := range blockedIPs {
+			t.Run("blocks resolved "+ip+" without retrying", func(t *testing.T) {
+				t.Parallel()
+				var lookups atomic.Int32
+				addr := netip.MustParseAddr(ip)
+				runner := Runner{
+					Jitter: zeroJitter,
+					lookupIP: func(_ context.Context, host string) ([]netip.Addr, error) {
+						lookups.Add(1)
+						assert.Equal(t, "metadata-alias.test", host)
+						return []netip.Addr{addr}, nil
+					},
+				}
+
+				result := runManifest(t, runner, `targets:
+  - name: test
+    url: http://metadata-alias.test:80/latest/meta-data/
+    retries: 2
+`)
+				assert.False(t, result.Up)
+				assert.Equal(t, errSSRFBlocked.Error(), result.Error)
+				assert.Equal(t, int32(1), lookups.Load())
+			})
+		}
+
+		multiIPCases := []struct {
+			name  string
+			addrs []netip.Addr
+		}{
+			{
+				name: "allowed then blocked metadata IP",
+				addrs: []netip.Addr{
+					netip.MustParseAddr("127.0.0.1"),
+					netip.MustParseAddr("169.254.169.254"),
+				},
+			},
+			{
+				name: "blocked metadata IP then allowed",
+				addrs: []netip.Addr{
+					netip.MustParseAddr("fd00:ec2::254"),
+					netip.MustParseAddr("127.0.0.1"),
+				},
+			},
+		}
+		for _, tc := range multiIPCases {
+			t.Run("rejects multi-IP response with "+tc.name, func(t *testing.T) {
+				t.Parallel()
+				var requests atomic.Int32
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					requests.Add(1)
+					w.WriteHeader(http.StatusOK)
+				}))
+				defer server.Close()
+
+				_, port, err := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
+				require.NoError(t, err)
+
+				var lookups atomic.Int32
+				runner := Runner{
+					Jitter: zeroJitter,
+					lookupIP: func(_ context.Context, host string) ([]netip.Addr, error) {
+						lookups.Add(1)
+						assert.Equal(t, "rebind.test", host)
+						return tc.addrs, nil
+					},
+				}
+
+				result := runManifest(t, runner, fmt.Sprintf(`targets:
+  - name: test
+    url: http://rebind.test:%s/
+    retries: 2
+`, port))
+				assert.False(t, result.Up)
+				assert.Equal(t, errSSRFBlocked.Error(), result.Error)
+				assert.Equal(t, int32(1), lookups.Load())
+				assert.Equal(t, int32(0), requests.Load())
+			})
+		}
+
+		t.Run("allows resolved IPv4 loopback address", func(t *testing.T) {
+			t.Parallel()
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
+
+			_, port, err := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
+			require.NoError(t, err)
+
+			var lookups atomic.Int32
+			runner := Runner{
+				Jitter: zeroJitter,
+				lookupIP: func(_ context.Context, host string) ([]netip.Addr, error) {
+					lookups.Add(1)
+					assert.Equal(t, "allowed.test", host)
+					return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
+				},
+			}
+
+			result := runManifest(t, runner, fmt.Sprintf(`targets:
+  - name: test
+    url: http://allowed.test:%s/
+`, port))
+			assert.Empty(t, result.Error)
+			assert.True(t, result.Up)
+			assert.Equal(t, int32(1), lookups.Load())
+			assert.Equal(t, int32(1), requests.Load())
+		})
+
+		t.Run("allows resolved IPv6 loopback address", func(t *testing.T) {
+			t.Parallel()
+			ln, err := net.Listen("tcp6", "[::1]:0")
+			require.NoError(t, err)
+
+			var requests atomic.Int32
+			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				w.WriteHeader(http.StatusOK)
+			}))
+			server.Listener = ln
+			server.Start()
+			defer server.Close()
+
+			_, port, err := net.SplitHostPort(ln.Addr().String())
+			require.NoError(t, err)
+
+			var lookups atomic.Int32
+			runner := Runner{
+				Jitter: zeroJitter,
+				lookupIP: func(_ context.Context, host string) ([]netip.Addr, error) {
+					lookups.Add(1)
+					assert.Equal(t, "allowed-v6.test", host)
+					return []netip.Addr{netip.MustParseAddr("::1")}, nil
+				},
+			}
+
+			result := runManifest(t, runner, fmt.Sprintf(`targets:
+  - name: test
+    url: http://allowed-v6.test:%s/
+`, port))
+			assert.Empty(t, result.Error)
+			assert.True(t, result.Up)
+			assert.Equal(t, int32(1), lookups.Load())
+			assert.Equal(t, int32(1), requests.Load())
+		})
+
+		t.Run("dials fallback candidate when first allowed address fails", func(t *testing.T) {
+			t.Parallel()
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
+
+			_, port, err := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
+			require.NoError(t, err)
+
+			runner := Runner{
+				Jitter: zeroJitter,
+				lookupIP: func(_ context.Context, host string) ([]netip.Addr, error) {
+					assert.Equal(t, "fallback.test", host)
+					return []netip.Addr{
+						netip.MustParseAddr("::1"),
+						netip.MustParseAddr("127.0.0.1"),
+					}, nil
+				},
+			}
+
+			result := runManifest(t, runner, fmt.Sprintf(`targets:
+  - name: test
+    url: http://fallback.test:%s/
+`, port))
+			assert.Empty(t, result.Error)
+			assert.True(t, result.Up)
+			assert.Equal(t, int32(1), requests.Load())
+		})
+	})
+
 	t.Run("captures status/body/headers/latency basics", func(t *testing.T) {
 		t.Parallel()
 		expectedBody := "Hello, Prober!"
@@ -389,6 +629,237 @@ func TestProbeTarget(t *testing.T) {
 		assert.Equal(t, "example.com", gotSNI)
 	})
 
+	t.Run("applies case-insensitive Host overrides for https TLS verification and plain http", func(t *testing.T) {
+		t.Parallel()
+
+		httpsCases := []struct {
+			name      string
+			headerKey string
+			hostVal   string
+			wantSNI   string
+		}{
+			{
+				name:      "bare hostname",
+				headerKey: "Host",
+				hostVal:   "example.com",
+				wantSNI:   "example.com",
+			},
+			{
+				name:      "lowercase host with port",
+				headerKey: "host",
+				hostVal:   "example.com:8443",
+				wantSNI:   "example.com",
+			},
+			{
+				name:      "uppercase host with bracketed IPv6 and port",
+				headerKey: "HOST",
+				hostVal:   "[::1]:8443",
+				wantSNI:   "",
+			},
+			{
+				name:      "mixed-case host with bracketed IPv6",
+				headerKey: "hOsT",
+				hostVal:   "[::1]",
+				wantSNI:   "",
+			},
+		}
+
+		for _, tc := range httpsCases {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				var gotHost, gotSNI string
+				tlsServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					gotHost = r.Host
+					if r.TLS != nil {
+						gotSNI = r.TLS.ServerName
+					}
+					w.WriteHeader(http.StatusOK)
+				}))
+				defer tlsServer.Close()
+
+				baseTransport, ok := tlsServer.Client().Transport.(*http.Transport)
+				require.True(t, ok)
+				runner := Runner{
+					Jitter:    zeroJitter,
+					Transport: baseTransport,
+				}
+				result := runManifest(t, runner, fmt.Sprintf(`targets:
+  - name: test
+    url: %s
+    headers:
+      %s: %q
+`, tlsServer.URL, tc.headerKey, tc.hostVal))
+
+				assert.Empty(t, result.Error)
+				assert.True(t, result.Up)
+				assert.Equal(t, tc.hostVal, gotHost)
+				assert.Equal(t, tc.wantSNI, gotSNI)
+				assert.Empty(t, baseTransport.TLSClientConfig.ServerName)
+			})
+		}
+
+		t.Run("rejects mismatched https Host when TLS verification is active", func(t *testing.T) {
+			t.Parallel()
+			tlsServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer tlsServer.Close()
+
+			runner := Runner{
+				Jitter:    zeroJitter,
+				Transport: tlsServer.Client().Transport,
+			}
+			result := runManifest(t, runner, fmt.Sprintf(`targets:
+  - name: test
+    url: %s
+    headers:
+      host: wrong.invalid
+`, tlsServer.URL))
+
+			assert.False(t, result.Up)
+			assert.Contains(t, result.Error, "certificate is valid for")
+		})
+
+		t.Run("sets r.Host on plain http targets with case-insensitive Host header", func(t *testing.T) {
+			t.Parallel()
+			var gotHost string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotHost = r.Host
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
+
+			result := runManifest(t, defaultRunner, fmt.Sprintf(`targets:
+  - name: test
+    url: %s
+    headers:
+      host: virtual.example.com:8080
+`, server.URL))
+
+			assert.Empty(t, result.Error)
+			assert.True(t, result.Up)
+			assert.Equal(t, "virtual.example.com:8080", gotHost)
+		})
+	})
+
+	t.Run("reuses pooled TLS connection across retries and targets sharing an https Host header", func(t *testing.T) {
+		t.Parallel()
+
+		t.Run("retries reuse one TLS connection", func(t *testing.T) {
+			t.Parallel()
+			var (
+				newConns atomic.Int32
+				requests atomic.Int32
+				mu       sync.Mutex
+				addrs    []string
+				gotHosts []string
+				gotSNIs  []string
+			)
+			tlsServer := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attempt := requests.Add(1)
+				mu.Lock()
+				addrs = append(addrs, r.RemoteAddr)
+				gotHosts = append(gotHosts, r.Host)
+				if r.TLS != nil {
+					gotSNIs = append(gotSNIs, r.TLS.ServerName)
+				}
+				mu.Unlock()
+				if attempt == 1 {
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			tlsServer.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+				if state == http.StateNew {
+					newConns.Add(1)
+				}
+			}
+			tlsServer.StartTLS()
+			defer tlsServer.Close()
+
+			runner := Runner{
+				Jitter:    zeroJitter,
+				Transport: tlsServer.Client().Transport,
+			}
+			result := runManifest(t, runner, fmt.Sprintf(`targets:
+  - name: test
+    url: %s
+    retries: 1
+    headers:
+      host: example.com:8443
+    assertions:
+      - status == 200
+`, tlsServer.URL))
+
+			assert.Empty(t, result.Error)
+			assert.True(t, result.Up)
+			assert.Equal(t, int32(2), requests.Load())
+			assert.Equal(t, int32(1), newConns.Load())
+			require.Len(t, addrs, 2)
+			assert.Equal(t, addrs[0], addrs[1])
+			assert.Equal(t, []string{"example.com:8443", "example.com:8443"}, gotHosts)
+			assert.Equal(t, []string{"example.com", "example.com"}, gotSNIs)
+		})
+
+		t.Run("multiple targets sharing an https Host header reuse one TLS connection", func(t *testing.T) {
+			t.Parallel()
+			var (
+				newConns atomic.Int32
+				requests atomic.Int32
+				mu       sync.Mutex
+				addrs    []string
+				gotHosts []string
+				gotSNIs  []string
+			)
+			tlsServer := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				mu.Lock()
+				addrs = append(addrs, r.RemoteAddr)
+				gotHosts = append(gotHosts, r.Host)
+				if r.TLS != nil {
+					gotSNIs = append(gotSNIs, r.TLS.ServerName)
+				}
+				mu.Unlock()
+				w.WriteHeader(http.StatusOK)
+			}))
+			tlsServer.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+				if state == http.StateNew {
+					newConns.Add(1)
+				}
+			}
+			tlsServer.StartTLS()
+			defer tlsServer.Close()
+
+			runner := Runner{
+				Jitter:         zeroJitter,
+				MaxConcurrency: 1,
+				Transport:      tlsServer.Client().Transport,
+			}
+			plan, err := Prepare(writeManifestFile(t, fmt.Sprintf(`targets:
+  - name: first
+    url: %s
+    headers:
+      host: example.com
+  - name: second
+    url: %s
+    headers:
+      HOST: example.com:8443
+`, tlsServer.URL, tlsServer.URL)))
+			require.NoError(t, err)
+
+			summary := runner.Execute(context.Background(), plan, nil)
+			assert.Equal(t, 2, summary.Passed)
+			assert.Equal(t, 0, summary.Failed)
+			assert.Equal(t, int32(2), requests.Load())
+			assert.Equal(t, int32(1), newConns.Load())
+			require.Len(t, addrs, 2)
+			assert.Equal(t, addrs[0], addrs[1])
+			assert.Equal(t, []string{"example.com", "example.com:8443"}, gotHosts)
+			assert.Equal(t, []string{"example.com", "example.com"}, gotSNIs)
+		})
+	})
+
 	t.Run("retries until success", func(t *testing.T) {
 		t.Parallel()
 		var attempts atomic.Int32
@@ -562,44 +1033,6 @@ func TestRunnerConcurrencyAndCancellation(t *testing.T) {
 		assert.Greater(t, summary.Results[0].LatencyMS, int64(0))
 		assert.Greater(t, summary.Duration, time.Duration(0))
 	})
-}
-
-func TestBlockMetadataDial(t *testing.T) {
-	t.Parallel()
-
-	blocked := []string{
-		"169.254.169.254:80",
-		"169.254.169.254:443",
-		"[::ffff:169.254.169.254]:80",
-		"[fd00:ec2::254]:80",
-		"169.254.170.2:80",
-		"100.100.100.200:80",
-	}
-	for _, addr := range blocked {
-		t.Run("blocks "+addr, func(t *testing.T) {
-			err := blockMetadataDial("tcp", addr, nil)
-			assert.ErrorIs(t, err, errSSRFBlocked)
-		})
-	}
-
-	allowed := []string{
-		"127.0.0.1:8080",
-		"[::1]:8080",
-		"93.184.216.34:443",
-	}
-	for _, addr := range allowed {
-		t.Run("allows "+addr, func(t *testing.T) {
-			assert.NoError(t, blockMetadataDial("tcp", addr, nil))
-		})
-	}
-}
-
-func TestExtractServerName(t *testing.T) {
-	t.Parallel()
-	assert.Equal(t, "example.com", extractServerName("example.com"))
-	assert.Equal(t, "example.com", extractServerName("example.com:8443"))
-	assert.Equal(t, "::1", extractServerName("[::1]:8443"))
-	assert.Equal(t, "::1", extractServerName("[::1]"))
 }
 
 func TestExecuteSummary(t *testing.T) {

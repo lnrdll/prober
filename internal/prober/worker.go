@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"math/rand/v2"
 	"net"
@@ -25,7 +26,8 @@ const (
 )
 
 var (
-	errSSRFBlocked = errors.New("SSRF Alert: Request to Cloud Metadata Server explicitly blocked")
+	errSSRFBlocked         = errors.New("SSRF Alert: Request to Cloud Metadata Server explicitly blocked")
+	errNonRetryableRequest = errors.New("non-retryable request")
 
 	blockedMetadataIPs = []netip.Addr{
 		netip.MustParseAddr("169.254.169.254"),
@@ -48,6 +50,8 @@ type Runner struct {
 	Jitter func() time.Duration
 	// Now returns the current time. When nil, time.Now is used.
 	Now func() time.Time
+
+	lookupIP func(ctx context.Context, host string) ([]netip.Addr, error)
 }
 
 // Execute probes every enabled target with default Runner settings and returns
@@ -100,7 +104,7 @@ func (r Runner) Execute(ctx context.Context, plan Plan, publish func(Result)) Su
 		return summary
 	}
 
-	secureClient, insecureClient, cleanup := r.buildClients()
+	clients, cleanup := r.buildClients(enabled)
 	defer cleanup()
 
 	workers := r.MaxConcurrency
@@ -124,7 +128,7 @@ func (r Runner) Execute(ctx context.Context, plan Plan, publish func(Result)) Su
 		go func() {
 			defer wg.Done()
 			for t := range jobs {
-				resultsChan <- runTarget(ctx, t, secureClient, insecureClient, now, jitter)
+				resultsChan <- runTarget(ctx, t, clients[targetClientKey(t)], now, jitter)
 			}
 		}()
 	}
@@ -150,54 +154,219 @@ func (r Runner) Execute(ctx context.Context, plan Plan, publish func(Result)) Su
 	return summary
 }
 
-func (r Runner) buildClients() (secureClient, insecureClient *http.Client, cleanup func()) {
-	if r.Transport == nil {
-		secureTransport := newBaseTransport(false)
-		insecureTransport := newBaseTransport(true)
-		return &http.Client{
-			CheckRedirect: noRedirect,
-			Transport:     secureTransport,
-		}, &http.Client{
-			CheckRedirect: noRedirect,
-			Transport:     insecureTransport,
-		}, func() {
-			secureTransport.CloseIdleConnections()
-			insecureTransport.CloseIdleConnections()
-		}
-	}
-
-	secureClient = &http.Client{
-		CheckRedirect: noRedirect,
-		Transport:     r.Transport,
-	}
-	if tr, ok := r.Transport.(*http.Transport); ok {
-		insecureTransport := tr.Clone()
-		if insecureTransport.TLSClientConfig != nil {
-			insecureTransport.TLSClientConfig = insecureTransport.TLSClientConfig.Clone()
-		} else {
-			insecureTransport.TLSClientConfig = &tls.Config{}
-		}
-		insecureTransport.TLSClientConfig.InsecureSkipVerify = true
-		insecureClient = &http.Client{
-			CheckRedirect: noRedirect,
-			Transport:     insecureTransport,
-		}
-		return secureClient, insecureClient, insecureTransport.CloseIdleConnections
-	}
-
-	return secureClient, secureClient, func() {}
+type clientKey struct {
+	sslSkipVerify bool
+	serverName    string
 }
 
-func newBaseTransport(insecure bool) *http.Transport {
+func targetHostOverride(headers map[string]string) string {
+	var matchedKey, matchedVal string
+	for k, v := range headers {
+		if strings.EqualFold(k, "Host") && v != "" {
+			if matchedKey == "" || k < matchedKey {
+				matchedKey = k
+				matchedVal = v
+			}
+		}
+	}
+	return matchedVal
+}
+
+func targetClientKey(t preparedTarget) clientKey {
+	key := clientKey{sslSkipVerify: t.sslSkipVerify}
+	if t.parsedURL != nil && strings.EqualFold(t.parsedURL.Scheme, "https") {
+		if hostOverride := targetHostOverride(t.headers); hostOverride != "" {
+			key.serverName = extractServerName(hostOverride)
+		}
+	}
+	return key
+}
+
+func (r Runner) buildClients(targets []preparedTarget) (map[clientKey]*http.Client, func()) {
+	clients := make(map[clientKey]*http.Client)
+	var ownedTransports []*http.Transport
+	cleanup := func() {
+		for _, tr := range ownedTransports {
+			tr.CloseIdleConnections()
+		}
+	}
+
+	if r.Transport != nil {
+		baseTransport, isHTTPTransport := r.Transport.(*http.Transport)
+		if !isHTTPTransport {
+			shared := &http.Client{
+				CheckRedirect: noRedirect,
+				Transport:     r.Transport,
+			}
+			for _, t := range targets {
+				clients[targetClientKey(t)] = shared
+			}
+			return clients, cleanup
+		}
+
+		for _, t := range targets {
+			key := targetClientKey(t)
+			if _, exists := clients[key]; exists {
+				continue
+			}
+			if !key.sslSkipVerify && key.serverName == "" {
+				clients[key] = &http.Client{
+					CheckRedirect: noRedirect,
+					Transport:     baseTransport,
+				}
+				continue
+			}
+			tr := cloneTransportWithTLS(baseTransport, key)
+			ownedTransports = append(ownedTransports, tr)
+			clients[key] = &http.Client{
+				CheckRedirect: noRedirect,
+				Transport:     tr,
+			}
+		}
+		return clients, cleanup
+	}
+
+	dialContext := r.newSafeDialContext()
+	for _, t := range targets {
+		key := targetClientKey(t)
+		if _, exists := clients[key]; exists {
+			continue
+		}
+		tr := newBaseTransport(dialContext, key)
+		ownedTransports = append(ownedTransports, tr)
+		clients[key] = &http.Client{
+			CheckRedirect: noRedirect,
+			Transport:     tr,
+		}
+	}
+	return clients, cleanup
+}
+
+func cloneTransportWithTLS(base *http.Transport, key clientKey) *http.Transport {
+	tr := base.Clone()
+	if tr.TLSClientConfig != nil {
+		tr.TLSClientConfig = tr.TLSClientConfig.Clone()
+	} else {
+		tr.TLSClientConfig = &tls.Config{}
+	}
+	if key.sslSkipVerify {
+		tr.TLSClientConfig.InsecureSkipVerify = true
+	}
+	if key.serverName != "" {
+		tr.TLSClientConfig.ServerName = key.serverName
+	}
+	return tr
+}
+
+func newBaseTransport(dialContext func(ctx context.Context, network, addr string) (net.Conn, error), key clientKey) *http.Transport {
 	tr := &http.Transport{
-		DialContext:         newSafeDialer().DialContext,
+		DialContext:         dialContext,
 		MaxIdleConnsPerHost: 10,
 		IdleConnTimeout:     90 * time.Second,
 	}
-	if insecure {
-		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	if key.sslSkipVerify || key.serverName != "" {
+		tr.TLSClientConfig = &tls.Config{
+			InsecureSkipVerify: key.sslSkipVerify,
+			ServerName:         key.serverName,
+		}
 	}
 	return tr
+}
+
+func (r Runner) newSafeDialContext() func(ctx context.Context, network, addr string) (net.Conn, error) {
+	dialer := newSafeDialer()
+	lookup := r.lookupIP
+	if lookup == nil {
+		lookup = func(ctx context.Context, host string) ([]netip.Addr, error) {
+			return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+		}
+	}
+
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+
+		if ip, err := netip.ParseAddr(host); err == nil {
+			if isBlockedMetadataIP(ip) {
+				return nil, errSSRFBlocked
+			}
+			return dialer.DialContext(ctx, network, addr)
+		}
+
+		addrs, err := lookup(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+		if len(addrs) == 0 {
+			return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
+		}
+
+		for _, ip := range addrs {
+			if isBlockedMetadataIP(ip) {
+				return nil, errSSRFBlocked
+			}
+		}
+
+		return dialCandidates(ctx, dialer, network, port, addrs)
+	}
+}
+
+func dialCandidates(
+	ctx context.Context,
+	dialer *net.Dialer,
+	network string,
+	port string,
+	addrs []netip.Addr,
+) (net.Conn, error) {
+	if len(addrs) == 1 {
+		return dialer.DialContext(ctx, network, net.JoinHostPort(addrs[0].String(), port))
+	}
+
+	deadline, hasDeadline := ctx.Deadline()
+	if dialer.Timeout > 0 {
+		dialDeadline := time.Now().Add(dialer.Timeout)
+		if !hasDeadline || dialDeadline.Before(deadline) {
+			deadline = dialDeadline
+			hasDeadline = true
+		}
+	}
+
+	var firstErr error
+	for i, ip := range addrs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		attemptCtx := ctx
+		var cancel context.CancelFunc
+		remaining := len(addrs) - i
+		if hasDeadline {
+			budget := time.Until(deadline)
+			if budget <= 0 {
+				return nil, context.DeadlineExceeded
+			}
+			if remaining > 1 {
+				attemptCtx, cancel = context.WithTimeout(ctx, budget/time.Duration(remaining))
+			} else {
+				attemptCtx, cancel = context.WithDeadline(ctx, deadline)
+			}
+		}
+
+		conn, err := dialer.DialContext(attemptCtx, network, net.JoinHostPort(ip.String(), port))
+		if cancel != nil {
+			cancel()
+		}
+		if err == nil {
+			return conn, nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+
+	return nil, firstErr
 }
 
 func newSafeDialer() *net.Dialer {
@@ -215,8 +384,7 @@ func noRedirect(*http.Request, []*http.Request) error {
 func runTarget(
 	ctx context.Context,
 	t preparedTarget,
-	secureClient *http.Client,
-	insecureClient *http.Client,
+	client *http.Client,
 	now func() time.Time,
 	jitter func() time.Duration,
 ) Result {
@@ -231,10 +399,6 @@ func runTarget(
 		}
 	}
 
-	client := secureClient
-	if t.sslSkipVerify {
-		client = insecureClient
-	}
 	return probeTarget(ctx, t, client, now)
 }
 
@@ -258,14 +422,15 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 func probeTarget(ctx context.Context, t preparedTarget, client *http.Client, now func() time.Time) Result {
 	var lastResult Result
 	for range t.attempts {
-		lastResult = probeTargetOnce(ctx, t, client, now)
+		var err error
+		lastResult, err = probeTargetOnce(ctx, t, client, now)
 		if lastResult.Up {
 			return lastResult
 		}
 		if ctx.Err() != nil {
 			return lastResult
 		}
-		if lastResult.Error != "" && isNonRetryableProbeError(lastResult.Error) {
+		if errors.Is(err, errSSRFBlocked) || errors.Is(err, errNonRetryableRequest) {
 			return lastResult
 		}
 	}
@@ -273,7 +438,7 @@ func probeTarget(ctx context.Context, t preparedTarget, client *http.Client, now
 	return lastResult
 }
 
-func probeTargetOnce(ctx context.Context, t preparedTarget, client *http.Client, now func() time.Time) Result {
+func probeTargetOnce(ctx context.Context, t preparedTarget, client *http.Client, now func() time.Time) (Result, error) {
 	res := Result{
 		Name:      t.name,
 		URL:       t.url,
@@ -284,7 +449,7 @@ func probeTargetOnce(ctx context.Context, t preparedTarget, client *http.Client,
 
 	if isBlockedMetadataHost(t.parsedURL) {
 		res.Error = errSSRFBlocked.Error()
-		return res
+		return res, errSSRFBlocked
 	}
 
 	reqCtx, cancel := context.WithTimeout(ctx, t.timeout)
@@ -293,7 +458,7 @@ func probeTargetOnce(ctx context.Context, t preparedTarget, client *http.Client,
 	req, err := http.NewRequestWithContext(reqCtx, t.method, t.url, bytes.NewBufferString(t.body))
 	if err != nil {
 		res.Error = err.Error()
-		return res
+		return res, fmt.Errorf("%w: %w", errNonRetryableRequest, err)
 	}
 	req.Header.Set("User-Agent", "prober")
 
@@ -301,23 +466,8 @@ func probeTargetOnce(ctx context.Context, t preparedTarget, client *http.Client,
 		req.Header.Set(k, v)
 	}
 
-	// Intercept Host from headers to update transport settings and SNI records safely.
-	if hostOverride := req.Header.Get("Host"); hostOverride != "" {
+	if hostOverride := targetHostOverride(t.headers); hostOverride != "" {
 		req.Host = hostOverride
-		if transport, ok := client.Transport.(*http.Transport); ok {
-			clonedTransport := transport.Clone()
-			defer clonedTransport.CloseIdleConnections()
-			if clonedTransport.TLSClientConfig != nil {
-				clonedTransport.TLSClientConfig = clonedTransport.TLSClientConfig.Clone()
-			} else {
-				clonedTransport.TLSClientConfig = &tls.Config{}
-			}
-			clonedTransport.TLSClientConfig.ServerName = extractServerName(hostOverride)
-
-			clonedClient := *client
-			clonedClient.Transport = clonedTransport
-			client = &clonedClient
-		}
 	}
 
 	start := now()
@@ -327,10 +477,10 @@ func probeTargetOnce(ctx context.Context, t preparedTarget, client *http.Client,
 	if err != nil {
 		if errors.Is(err, errSSRFBlocked) {
 			res.Error = errSSRFBlocked.Error()
-		} else {
-			res.Error = err.Error()
+			return res, errSSRFBlocked
 		}
-		return res
+		res.Error = err.Error()
+		return res, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -340,9 +490,8 @@ func probeTargetOnce(ctx context.Context, t preparedTarget, client *http.Client,
 	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1024))
 	if err != nil {
 		res.Error = err.Error()
-		return res
+		return res, err
 	}
-	respStr := string(bodyBytes)
 
 	respHeaders := make(map[string]string)
 	for k, v := range resp.Header {
@@ -351,35 +500,20 @@ func probeTargetOnce(ctx context.Context, t preparedTarget, client *http.Client,
 		}
 	}
 
-	res.Body = respStr
+	res.Body = string(bodyBytes)
 	res.Headers = respHeaders
 
-	var issuerStr, subjectStr, dnsNamesStr string
 	if resp.TLS != nil && len(resp.TLS.PeerCertificates) > 0 {
 		cert := resp.TLS.PeerCertificates[0]
 		res.SSLDaysLeft = int(cert.NotAfter.Sub(now()).Hours() / 24)
-		issuerStr = cert.Issuer.String()
-		subjectStr = cert.Subject.String()
-		dnsNamesStr = strings.Join(cert.DNSNames, ",")
-	}
-	res.SSLIssuer = issuerStr
-	res.SSLSubject = subjectStr
-	res.SSLDNSNames = dnsNamesStr
-
-	evalCtx := evalContext{
-		Status:      resp.StatusCode,
-		Body:        respStr,
-		LatencyMS:   res.LatencyMS,
-		SSLDaysLeft: res.SSLDaysLeft,
-		SSLIssuer:   issuerStr,
-		SSLSubject:  subjectStr,
-		SSLDNSNames: dnsNamesStr,
-		Headers:     respHeaders,
+		res.SSLIssuer = cert.Issuer.String()
+		res.SSLSubject = cert.Subject.String()
+		res.SSLDNSNames = strings.Join(cert.DNSNames, ",")
 	}
 
 	res.Up = true
 	for _, a := range t.assertions {
-		passed, err := a.evaluate(evalCtx)
+		passed, err := a.evaluate(res)
 		if err != nil || !passed {
 			res.Up = false
 			res.FailedAssertion = a.text
@@ -387,7 +521,7 @@ func probeTargetOnce(ctx context.Context, t preparedTarget, client *http.Client,
 		}
 	}
 
-	return res
+	return res, nil
 }
 
 func isBlockedMetadataHost(parsedURL *url.URL) bool {
@@ -430,8 +564,4 @@ func extractServerName(host string) string {
 		return h
 	}
 	return strings.Trim(host, "[]")
-}
-
-func isNonRetryableProbeError(errMsg string) bool {
-	return strings.Contains(errMsg, "SSRF Alert")
 }
