@@ -62,6 +62,17 @@ description = "(v) Run go vuln"
 alias = "v"
 run = "govulncheck ./..."
 
+[tasks.fmt]
+description = "Check gofmt formatting"
+dir = "{{ config_root }}"
+run = '''
+unformatted=$(gofmt -l .) || exit $?
+if [ -n "$unformatted" ]; then
+  printf '%s\n' "$unformatted"
+  exit 1
+fi
+'''
+
 [tasks.vet]
 description = "Run go vet"
 run = "go vet ./..."
@@ -69,6 +80,7 @@ run = "go vet ./..."
 [tasks.quality]
 description = "CI-equivalent quality gates"
 run = [
+  { task = "fmt" },
   { task = "test" },
   { task = "vet" },
   { task = "lint" },
