@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,14 +78,71 @@ func TestOpenUsesStdoutWhenNothingIsSelected(t *testing.T) {
 
 func TestOpenDeduplicatesSelections(t *testing.T) {
 	t.Parallel()
-	var buf bytes.Buffer
-	outputs, err := Open(Config{Selections: []string{"stdout", " stdout "}, Writer: &buf})
-	require.NoError(t, err)
 
-	outputs.Publish(prober.Result{URL: "http://example.com", Up: true, Status: 200})
-	require.NoError(t, outputs.Finish(prober.Summary{}))
+	t.Run("deduplicates single output with surrounding whitespace", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		outputs, err := Open(Config{Selections: []string{"stdout", " stdout "}, Writer: &buf})
+		require.NoError(t, err)
 
-	assert.Len(t, bytes.Split(bytes.TrimSpace(buf.Bytes()), []byte("\n")), 1)
+		outputs.Publish(prober.Result{URL: "http://example.com", Up: true, Status: 200})
+		require.NoError(t, outputs.Finish(prober.Summary{}))
+
+		assert.Len(t, bytes.Split(bytes.TrimSpace(buf.Bytes()), []byte("\n")), 1)
+	})
+
+	t.Run("deduplicates multiple outputs with surrounding whitespace", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		path := filepath.Join(t.TempDir(), "out.log")
+		outputs, err := Open(Config{
+			Selections: []string{" file ", "stdout", "file", " stdout "},
+			Writer:     &buf,
+			Settings:   map[Name]Setting{"file": {Value: path, Set: true}},
+		})
+		require.NoError(t, err)
+
+		outputs.Publish(prober.Result{URL: "http://example.com", Up: true, Status: 200})
+		require.NoError(t, outputs.Finish(prober.Summary{}))
+
+		assert.Len(t, bytes.Split(bytes.TrimSpace(buf.Bytes()), []byte("\n")), 1)
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		assert.Len(t, bytes.Split(bytes.TrimSpace(data), []byte("\n")), 1)
+	})
+
+	t.Run("preserves selection order when deduplicating multiple outputs", func(t *testing.T) {
+		t.Parallel()
+		junitDir := t.TempDir()
+
+		outputs, err := Open(Config{
+			Selections: []string{" summary ", "junit", "summary", " junit "},
+			Writer:     failingWriter{},
+			Settings:   map[Name]Setting{"junit": {Value: junitDir, Set: true}},
+		})
+		require.NoError(t, err)
+		err = outputs.Finish(prober.Summary{Duration: time.Second})
+		require.Error(t, err)
+		summaryIdx := strings.Index(err.Error(), "summary: publish summary failed: boom")
+		junitIdx := strings.Index(err.Error(), "junit: publish summary failed:")
+		assert.Greater(t, summaryIdx, -1, err.Error())
+		assert.Greater(t, junitIdx, summaryIdx, err.Error())
+		assert.NotContains(t, err.Error(), "failed 2 times")
+
+		outputs, err = Open(Config{
+			Selections: []string{" junit ", "summary", "junit", " summary "},
+			Writer:     failingWriter{},
+			Settings:   map[Name]Setting{"junit": {Value: junitDir, Set: true}},
+		})
+		require.NoError(t, err)
+		err = outputs.Finish(prober.Summary{Duration: time.Second})
+		require.Error(t, err)
+		summaryIdx = strings.Index(err.Error(), "summary: publish summary failed: boom")
+		junitIdx = strings.Index(err.Error(), "junit: publish summary failed:")
+		assert.Greater(t, junitIdx, -1, err.Error())
+		assert.Greater(t, summaryIdx, junitIdx, err.Error())
+		assert.NotContains(t, err.Error(), "failed 2 times")
+	})
 }
 
 func TestOutputsWriteStdoutAndSummaryToWriter(t *testing.T) {
@@ -112,31 +170,140 @@ func TestOutputsWriteStdoutAndSummaryToWriter(t *testing.T) {
 	assert.Equal(t, "FAILED https://bad.example.com status=500 reason=boom", lines[2])
 }
 
-func TestOutputsAppendFileLog(t *testing.T) {
+func TestOutputsWriteStdoutAttributes(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "out.log")
-	outputs, err := Open(Config{
-		Selections: []string{"file"},
-		Settings:   map[Name]Setting{"file": {Value: path, Set: true}},
-	})
+	var buf bytes.Buffer
+	outputs, err := Open(Config{Selections: []string{"stdout"}, Writer: &buf})
 	require.NoError(t, err)
 
-	ts := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	outputs.Publish(prober.Result{URL: "http://example.com", Up: true, Status: 200, LatencyMS: 42, Tags: map[string]string{"env": "test"}, Timestamp: ts})
+	outputs.Publish(prober.Result{URL: "http://example.com", Up: true, Status: 200, LatencyMS: 10, Tags: map[string]string{"service": "web"}})
+	outputs.Publish(prober.Result{URL: "http://example.com/down", Up: false, Status: 500, LatencyMS: 20, Error: "boom", FailedAssertion: "status == 200"})
 	require.NoError(t, outputs.Finish(prober.Summary{}))
 
-	data, err := os.ReadFile(path)
-	require.NoError(t, err)
-	var got fileLogSchema
-	require.NoError(t, json.Unmarshal(bytes.TrimSpace(data), &got))
-	assert.Equal(t, fileLogSchema{
-		Timestamp: "2026-01-02T03:04:05Z",
-		URL:       "http://example.com",
-		Up:        true,
-		Status:    200,
-		LatencyMS: 42,
-		Tags:      map[string]string{"env": "test"},
-	}, got)
+	lines := bytes.Split(bytes.TrimSpace(buf.Bytes()), []byte("\n"))
+	require.Len(t, lines, 2)
+
+	var first map[string]any
+	var second map[string]any
+	require.NoError(t, json.Unmarshal(lines[0], &first))
+	require.NoError(t, json.Unmarshal(lines[1], &second))
+
+	assert.Equal(t, "Uptime check passed", first["msg"])
+	assert.Equal(t, "INFO", first["level"])
+	assert.Equal(t, "http://example.com", first["url"])
+	assert.Equal(t, true, first["up"])
+	assert.Equal(t, float64(200), first["status"])
+	assert.Equal(t, float64(10), first["latency_ms"])
+	assert.Equal(t, "web", first["service"])
+	assert.NotContains(t, first, "error")
+	assert.NotContains(t, first, "failed_assertion")
+
+	assert.Equal(t, "Uptime check failed", second["msg"])
+	assert.Equal(t, "ERROR", second["level"])
+	assert.Equal(t, "http://example.com/down", second["url"])
+	assert.Equal(t, false, second["up"])
+	assert.Equal(t, float64(500), second["status"])
+	assert.Equal(t, float64(20), second["latency_ms"])
+	assert.Equal(t, "boom", second["error"])
+	assert.Equal(t, "status == 200", second["failed_assertion"])
+}
+
+func TestOutputsWriteSummary(t *testing.T) {
+	t.Parallel()
+
+	t.Run("omits passing targets from failed lines", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		outputs, err := Open(Config{Selections: []string{"summary"}, Writer: &buf})
+		require.NoError(t, err)
+
+		err = outputs.Finish(prober.Summary{
+			Total:    2,
+			Passed:   1,
+			Failed:   1,
+			Skipped:  0,
+			Duration: 1234 * time.Millisecond,
+			Results: []prober.Result{
+				{URL: "https://ok.example.com", Up: true, Status: 200},
+				{URL: "https://bad.example.com", Up: false, Status: 500, FailedAssertion: "status == 200"},
+			},
+		})
+		require.NoError(t, err)
+		assert.Contains(t, buf.String(), "Summary: total=2 passed=1 failed=1 skipped=0 duration=1.234s")
+		assert.Contains(t, buf.String(), "FAILED https://bad.example.com status=500 reason=status == 200")
+		assert.NotContains(t, buf.String(), "ok.example.com")
+	})
+
+	t.Run("propagates writer errors", func(t *testing.T) {
+		t.Parallel()
+		outputs, err := Open(Config{Selections: []string{"summary"}, Writer: failingWriter{}})
+		require.NoError(t, err)
+
+		err = outputs.Finish(prober.Summary{Duration: time.Second})
+		assert.EqualError(t, err, "output errors:\n  summary: publish summary failed: boom")
+	})
+}
+
+func TestOutputsAppendFileLog(t *testing.T) {
+	t.Parallel()
+
+	t.Run("writes passing result without failed_assertion or error keys", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(t.TempDir(), "out.log")
+		outputs, err := Open(Config{
+			Selections: []string{"file"},
+			Settings:   map[Name]Setting{"file": {Value: path, Set: true}},
+		})
+		require.NoError(t, err)
+
+		ts := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+		outputs.Publish(prober.Result{URL: "http://example.com", Up: true, Status: 200, LatencyMS: 42, Tags: map[string]string{"env": "test"}, Timestamp: ts})
+		require.NoError(t, outputs.Finish(prober.Summary{}))
+
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		var got fileLogSchema
+		require.NoError(t, json.Unmarshal(bytes.TrimSpace(data), &got))
+		assert.Equal(t, fileLogSchema{
+			Timestamp: "2026-01-02T03:04:05Z",
+			URL:       "http://example.com",
+			Up:        true,
+			Status:    200,
+			LatencyMS: 42,
+			Tags:      map[string]string{"env": "test"},
+		}, got)
+		assert.NotContains(t, string(data), `"failed_assertion"`)
+		assert.NotContains(t, string(data), `"error"`)
+	})
+
+	t.Run("records failed assertion without error key", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(t.TempDir(), "out.log")
+		outputs, err := Open(Config{
+			Selections: []string{"file"},
+			Settings:   map[Name]Setting{"file": {Value: path, Set: true}},
+		})
+		require.NoError(t, err)
+
+		ts := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+		outputs.Publish(prober.Result{
+			URL:             "http://example.com",
+			Up:              false,
+			Status:          500,
+			LatencyMS:       42,
+			FailedAssertion: "status == 200",
+			Timestamp:       ts,
+		})
+		require.NoError(t, outputs.Finish(prober.Summary{}))
+
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		var got map[string]any
+		require.NoError(t, json.Unmarshal(bytes.TrimSpace(data), &got))
+		assert.Equal(t, false, got["up"])
+		assert.Equal(t, "status == 200", got["failed_assertion"])
+		assert.NotContains(t, got, "error")
+	})
 }
 
 func TestOutputsWriteJUnitReport(t *testing.T) {
@@ -148,27 +315,100 @@ func TestOutputsWriteJUnitReport(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	failing := prober.Result{Name: "api", URL: "https://api.example.com", Up: false, Status: 500, LatencyMS: 35, FailedAssertion: "status == 200"}
-	outputs.Publish(failing)
-	require.NoError(t, outputs.Finish(prober.Summary{Total: 1, Failed: 1, Duration: 1500 * time.Millisecond, Results: []prober.Result{failing}}))
+	passing := prober.Result{Name: "homepage", URL: "https://example.com", Up: true, Status: 200, LatencyMS: 15, Timestamp: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC), Body: "ok"}
+	failedAssertion := prober.Result{Name: "api", URL: "https://api.example.com", Up: false, Status: 500, LatencyMS: 35, FailedAssertion: "status == 200", Timestamp: time.Date(2026, 1, 2, 3, 4, 6, 0, time.UTC), Body: "failure"}
+	failedError := prober.Result{Name: "backend", URL: "https://backend.example.com", Up: false, Status: 0, LatencyMS: 50, Error: "connection refused", Timestamp: time.Date(2026, 1, 2, 3, 4, 7, 0, time.UTC)}
+	skipped := prober.Result{Name: "disabled-target", URL: "https://disabled.example.com", Timestamp: time.Date(2026, 1, 2, 3, 4, 4, 0, time.UTC)}
+
+	outputs.Publish(passing)
+	outputs.Publish(failedAssertion)
+	outputs.Publish(failedError)
+	require.NoError(t, outputs.Finish(prober.Summary{
+		Total:          3,
+		Passed:         1,
+		Failed:         2,
+		Skipped:        1,
+		Duration:       1500 * time.Millisecond,
+		Results:        []prober.Result{passing, failedAssertion, failedError},
+		SkippedResults: []prober.Result{skipped},
+	}))
 
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
+	assert.Contains(t, string(data), xml.Header)
+
 	var report junitTestSuite
 	require.NoError(t, xml.Unmarshal(data, &report))
-	assert.Equal(t, 1, report.Tests)
-	assert.Equal(t, 1, report.Failures)
+	assert.Equal(t, "prober", report.Name)
+	assert.Equal(t, 4, report.Tests)
+	assert.Equal(t, 2, report.Failures)
+	assert.Equal(t, 1, report.Skipped)
 	assert.Equal(t, "1.500", report.Time)
-	require.Len(t, report.TestCases, 1)
-	require.NotNil(t, report.TestCases[0].Failure)
-	assert.Equal(t, "status == 200", report.TestCases[0].Failure.Message)
+	assert.Equal(t, "2026-01-02T03:04:04Z", report.Timestamp)
+	require.Len(t, report.TestCases, 4)
+
+	assert.Equal(t, "disabled-target", report.TestCases[0].Name)
+	assert.NotNil(t, report.TestCases[0].Skipped)
+
+	assert.Equal(t, "homepage", report.TestCases[1].Name)
+	assert.Nil(t, report.TestCases[1].Failure)
+	assert.Equal(t, "ok", report.TestCases[1].SystemOut)
+
+	assert.Equal(t, "api", report.TestCases[2].Name)
+	if assert.NotNil(t, report.TestCases[2].Failure) {
+		assert.Equal(t, "status == 200", report.TestCases[2].Failure.Message)
+		assert.Equal(t, "assertion", report.TestCases[2].Failure.Type)
+	}
+	assert.Equal(t, "failure", report.TestCases[2].SystemOut)
+
+	assert.Equal(t, "backend", report.TestCases[3].Name)
+	if assert.NotNil(t, report.TestCases[3].Failure) {
+		assert.Equal(t, "connection refused", report.TestCases[3].Failure.Message)
+		assert.Equal(t, "error", report.TestCases[3].Failure.Type)
+	}
+	assert.Empty(t, report.TestCases[3].SystemOut)
+}
+
+func TestOutputsReportJUnitWriteFailureOnce(t *testing.T) {
+	t.Parallel()
+
+	t.Run("parent path is a regular file", func(t *testing.T) {
+		t.Parallel()
+		parent := filepath.Join(t.TempDir(), "regular-file")
+		require.NoError(t, os.WriteFile(parent, []byte("x"), 0o644))
+
+		outputs, err := Open(Config{
+			Selections: []string{"junit"},
+			Settings:   map[Name]Setting{"junit": {Value: filepath.Join(parent, "report.xml"), Set: true}},
+		})
+		require.NoError(t, err)
+
+		err = outputs.Finish(prober.Summary{Duration: time.Second})
+		require.Error(t, err)
+		assert.True(t, strings.HasPrefix(err.Error(), "output errors:\n  junit: publish summary failed: "), err.Error())
+		assert.NotContains(t, err.Error(), "close failed")
+	})
+
+	t.Run("report path is a directory", func(t *testing.T) {
+		t.Parallel()
+		outputs, err := Open(Config{
+			Selections: []string{"junit"},
+			Settings:   map[Name]Setting{"junit": {Value: t.TempDir(), Set: true}},
+		})
+		require.NoError(t, err)
+
+		err = outputs.Finish(prober.Summary{Duration: time.Second})
+		require.Error(t, err)
+		assert.True(t, strings.HasPrefix(err.Error(), "output errors:\n  junit: publish summary failed: "), err.Error())
+		assert.NotContains(t, err.Error(), "close failed")
+	})
 }
 
 func TestOutputsSendStatsDGauges(t *testing.T) {
 	t.Parallel()
-	res := prober.Result{URL: "https://example.com", Up: true, Status: 200, LatencyMS: 42, Tags: map[string]string{"environment": "prod", "team": "web"}}
 
-	t.Run("datadog", func(t *testing.T) {
+	t.Run("datadog emits namespace, tags, and ssl_days_left when positive", func(t *testing.T) {
+		t.Parallel()
 		conn, addr := listenUDP(t)
 		outputs, err := Open(Config{
 			Selections: []string{"statsd-datadog"},
@@ -176,15 +416,81 @@ func TestOutputsSendStatsDGauges(t *testing.T) {
 		})
 		require.NoError(t, err)
 
+		res := prober.Result{
+			URL:         "https://example.com",
+			Up:          true,
+			Status:      200,
+			LatencyMS:   42,
+			SSLDaysLeft: 30,
+			Tags:        map[string]string{"environment": "prod", "team": "web"},
+		}
 		outputs.Publish(res)
 		require.NoError(t, outputs.Finish(prober.Summary{}))
 
-		got := readDatagrams(t, conn)
-		assert.Contains(t, got, "custom_monitoring.uptime_prober.status:1|g")
-		assert.Contains(t, got, "custom_monitoring.uptime_prober.latency_ms:42|g")
+		got := readDatagrams(t, conn,
+			"custom_monitoring.uptime_prober.status:1|g",
+			"custom_monitoring.uptime_prober.latency_ms:42|g",
+			"custom_monitoring.uptime_prober.ssl_days_left:30|g",
+		)
+		metrics := parseStatsDMetrics(t, got)
+		wantTags := []string{"url:https://example.com", "environment:prod", "team:web"}
+
+		status, ok := metrics["custom_monitoring.uptime_prober.status"]
+		require.True(t, ok, "missing status metric in %q", got)
+		assert.Equal(t, "1|g", status.value)
+		assert.ElementsMatch(t, wantTags, status.tags)
+
+		latency, ok := metrics["custom_monitoring.uptime_prober.latency_ms"]
+		require.True(t, ok, "missing latency_ms metric in %q", got)
+		assert.Equal(t, "42|g", latency.value)
+		assert.ElementsMatch(t, wantTags, latency.tags)
+
+		ssl, ok := metrics["custom_monitoring.uptime_prober.ssl_days_left"]
+		require.True(t, ok, "missing ssl_days_left metric in %q", got)
+		assert.Equal(t, "30|g", ssl.value)
+		assert.ElementsMatch(t, wantTags, ssl.tags)
 	})
 
-	t.Run("gcp", func(t *testing.T) {
+	t.Run("datadog emits zero status when down and omits ssl_days_left when non-positive", func(t *testing.T) {
+		t.Parallel()
+		conn, addr := listenUDP(t)
+		outputs, err := Open(Config{
+			Selections: []string{"statsd-datadog"},
+			Settings:   map[Name]Setting{"statsd-datadog": {Value: addr, Set: true}},
+		})
+		require.NoError(t, err)
+
+		outputs.Publish(prober.Result{
+			URL:         "https://down.example.com",
+			Up:          false,
+			Status:      503,
+			LatencyMS:   15,
+			SSLDaysLeft: 0,
+		})
+		require.NoError(t, outputs.Finish(prober.Summary{}))
+
+		got := readDatagrams(t, conn,
+			"custom_monitoring.uptime_prober.status:0|g",
+			"custom_monitoring.uptime_prober.latency_ms:15|g",
+		)
+		metrics := parseStatsDMetrics(t, got)
+		wantTags := []string{"url:https://down.example.com"}
+
+		status, ok := metrics["custom_monitoring.uptime_prober.status"]
+		require.True(t, ok, "missing status metric in %q", got)
+		assert.Equal(t, "0|g", status.value)
+		assert.ElementsMatch(t, wantTags, status.tags)
+
+		latency, ok := metrics["custom_monitoring.uptime_prober.latency_ms"]
+		require.True(t, ok, "missing latency_ms metric in %q", got)
+		assert.Equal(t, "15|g", latency.value)
+		assert.ElementsMatch(t, wantTags, latency.tags)
+
+		assert.NotContains(t, got, "ssl_days_left")
+	})
+
+	t.Run("gcp appends environment and team suffix, tags only url, and omits ssl_days_left", func(t *testing.T) {
+		t.Parallel()
 		conn, addr := listenUDP(t)
 		outputs, err := Open(Config{
 			Selections: []string{"statsd-gcp"},
@@ -192,13 +498,109 @@ func TestOutputsSendStatsDGauges(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		outputs.Publish(res)
+		outputs.Publish(prober.Result{
+			URL:         "https://example.com",
+			Up:          true,
+			Status:      200,
+			LatencyMS:   42,
+			SSLDaysLeft: 30,
+			Tags:        map[string]string{"environment": "prod", "team": "web", "region": "us"},
+		})
 		require.NoError(t, outputs.Finish(prober.Summary{}))
 
-		got := readDatagrams(t, conn)
-		assert.Contains(t, got, "uptime_prober.status.env_prod.team_web:1|g")
-		assert.Contains(t, got, "uptime_prober.latency_ms.env_prod.team_web:42|g")
+		got := readDatagrams(t, conn,
+			"uptime_prober.status.env_prod.team_web:1|g",
+			"uptime_prober.latency_ms.env_prod.team_web:42|g",
+		)
+		metrics := parseStatsDMetrics(t, got)
+		wantTags := []string{"url:https://example.com"}
+
+		status, ok := metrics["uptime_prober.status.env_prod.team_web"]
+		require.True(t, ok, "missing status metric in %q", got)
+		assert.Equal(t, "1|g", status.value)
+		assert.Equal(t, wantTags, status.tags)
+
+		latency, ok := metrics["uptime_prober.latency_ms.env_prod.team_web"]
+		require.True(t, ok, "missing latency_ms metric in %q", got)
+		assert.Equal(t, "42|g", latency.value)
+		assert.Equal(t, wantTags, latency.tags)
+
+		assert.NotContains(t, got, "ssl_days_left")
+		assert.NotContains(t, got, "custom_monitoring.")
 	})
+
+	t.Run("gcp uses unsuffixed names without both environment and team tags and emits zero status when down", func(t *testing.T) {
+		t.Parallel()
+		for _, tc := range []struct {
+			label string
+			tags  map[string]string
+		}{
+			{label: "no tags", tags: nil},
+			{label: "only environment", tags: map[string]string{"environment": "prod"}},
+			{label: "only team", tags: map[string]string{"team": "web"}},
+		} {
+			t.Run(tc.label, func(t *testing.T) {
+				t.Parallel()
+				conn, addr := listenUDP(t)
+				outputs, err := Open(Config{
+					Selections: []string{"statsd-gcp"},
+					Settings:   map[Name]Setting{"statsd-gcp": {Value: addr, Set: true}},
+				})
+				require.NoError(t, err)
+
+				outputs.Publish(prober.Result{
+					URL:       "https://down.example.com",
+					Up:        false,
+					Status:    500,
+					LatencyMS: 18,
+					Tags:      tc.tags,
+				})
+				require.NoError(t, outputs.Finish(prober.Summary{}))
+
+				got := readDatagrams(t, conn,
+					"uptime_prober.status:0|g",
+					"uptime_prober.latency_ms:18|g",
+				)
+				metrics := parseStatsDMetrics(t, got)
+				wantTags := []string{"url:https://down.example.com"}
+
+				status, ok := metrics["uptime_prober.status"]
+				require.True(t, ok, "missing status metric in %q", got)
+				assert.Equal(t, "0|g", status.value)
+				assert.Equal(t, wantTags, status.tags)
+
+				latency, ok := metrics["uptime_prober.latency_ms"]
+				require.True(t, ok, "missing latency_ms metric in %q", got)
+				assert.Equal(t, "18|g", latency.value)
+				assert.Equal(t, wantTags, latency.tags)
+
+				assert.NotContains(t, got, ".env_")
+				assert.NotContains(t, got, ".team_")
+			})
+		}
+	})
+}
+
+func TestOutputsReportStatsDBackgroundSendFailure(t *testing.T) {
+	t.Parallel()
+	for _, name := range []Name{outputStatsdDatadog, outputStatsdGCP} {
+		t.Run(string(name), func(t *testing.T) {
+			t.Parallel()
+			// Nothing listens on this socket, so every background write fails.
+			addr := "unix://" + filepath.Join(t.TempDir(), "missing.sock")
+			outputs, err := Open(Config{
+				Selections: []string{string(name)},
+				Settings:   map[Name]Setting{name: {Value: addr, Set: true}},
+			})
+			require.NoError(t, err)
+
+			outputs.Publish(prober.Result{URL: "https://example.com", Up: true})
+			err = outputs.Finish(prober.Summary{})
+			require.Error(t, err)
+			assert.ErrorContains(t, err, string(name))
+			assert.ErrorContains(t, err, "missing.sock")
+		})
+	}
 }
 
 func TestOpenAppliesDefaults(t *testing.T) {
@@ -538,3 +940,84 @@ func TestOutputsCloseEveryOutputAfterACloseFails(t *testing.T) {
 	assert.True(t, gcp.closed)
 	assert.True(t, stdout.closed)
 }
+
+type parsedStatsDMetric struct {
+	value string
+	tags  []string
+}
+
+func parseStatsDMetrics(t *testing.T, raw string) map[string]parsedStatsDMetric {
+	t.Helper()
+	metrics := make(map[string]parsedStatsDMetric)
+	for line := range strings.SplitSeq(strings.TrimSpace(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		head, tagPart, hasTags := strings.Cut(line, "|#")
+		name, valAndType, ok := strings.Cut(head, ":")
+		require.True(t, ok, "malformed statsd line: %q", line)
+		var tags []string
+		if hasTags && tagPart != "" {
+			tags = strings.Split(tagPart, ",")
+		}
+		metrics[name] = parsedStatsDMetric{value: valAndType, tags: tags}
+	}
+	return metrics
+}
+
+func listenUDP(t *testing.T) (net.PacketConn, string) {
+	t.Helper()
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	return conn, conn.LocalAddr().String()
+}
+
+func readDatagrams(t *testing.T, conn net.PacketConn, expected ...string) string {
+	t.Helper()
+	var got bytes.Buffer
+	buf := make([]byte, 65535)
+	deadline := time.Now().Add(2 * time.Second)
+	for len(expected) > 0 && !containsAll(got.String(), expected) {
+		require.NoError(t, conn.SetReadDeadline(deadline))
+		n, _, err := conn.ReadFrom(buf)
+		if err != nil {
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
+				return got.String()
+			}
+			require.NoError(t, err)
+		}
+		got.Write(buf[:n])
+		got.WriteByte('\n')
+	}
+
+	// Drain any remaining queued packets with an immediate read deadline.
+	for {
+		require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Millisecond)))
+		n, _, err := conn.ReadFrom(buf)
+		if err != nil {
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
+				return got.String()
+			}
+			require.NoError(t, err)
+		}
+		got.Write(buf[:n])
+		got.WriteByte('\n')
+	}
+}
+
+func containsAll(s string, subs []string) bool {
+	for _, sub := range subs {
+		if !strings.Contains(s, sub) {
+			return false
+		}
+	}
+	return true
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("boom") }
